@@ -4,7 +4,17 @@ const Schema = mongoose.Schema;
 const UserSchema = new Schema({
     username: {
         type: String,
-        required: true // Ensure the name is required
+        required: true, // Ensure the name is required
+        unique: true 
+    }, 
+    student_id: {
+        type: String,
+        required: true,
+        unique: true // Ensure email is unique
+    },   
+    name: {
+        type: String,
+        required: true,
     },
     email: {
         type: String,

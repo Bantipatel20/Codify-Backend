@@ -84,6 +84,24 @@ The server runs on [http://localhost:5000](http://localhost:5000) by default.
 - `GET /compile/languages`
   - Lists supported languages
 
+## User Model
+
+The `User` schema defines the structure for user documents in MongoDB:
+
+| Field      | Type   | Required | Unique | Description                        |
+|------------|--------|----------|--------|------------------------------------|
+| username   | String | Yes      | Yes    | Username for login                 |
+| student_id | String | Yes      | Yes    | Unique student identifier          |
+| name       | String | Yes      | No     | Full name                          |
+| email      | String | Yes      | Yes    | User email (must be unique)        |
+| password   | String | Yes      | No     | Hashed password                    |
+| department | String | Yes      | No     | Department name                    |
+| batch      | String | Yes      | No     | Batch/year                         |
+| div        | String | Yes      | No     | Division                           |
+| createdAt  | Date   | No       | No     | Creation timestamp (auto-set)      |
+
+See [`models/Users.js`](models/Users.js) for implementation details.
+
 ## File Descriptions
 
 - [`app.js`](app.js): Main Express app, sets up middleware and routes.

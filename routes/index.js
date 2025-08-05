@@ -124,8 +124,45 @@ router.post('/compile', async function(req, res, next) {
       
       case 'java':
         extension = '.java';
-        filename = path.join(tempDir, `${uniqueId}${extension}`);
-        command = `cd "${tempDir}" && javac "${filename}" && java ${uniqueId}`;
+        
+        // Create a unique subdirectory for this compilation
+        const uniqueSubDir = path.join(tempDir, uniqueId);
+        if (!fs.existsSync(uniqueSubDir)) {
+          fs.mkdirSync(uniqueSubDir, { recursive: true });
+        }
+        
+        // Extract class name from code
+        const extractClassName = (javaCode) => {
+          const codeWithoutComments = javaCode
+            .replace(/\/\*[\s\S]*?\*\//g, '')
+            .replace(/\/\/.*$/gm, '');
+          
+          const publicClassMatch = codeWithoutComments.match(/public\s+class\s+(\w+)/);
+          if (publicClassMatch) return publicClassMatch[1];
+          
+          const anyClassMatch = codeWithoutComments.match(/(?:^|\s)class\s+(\w+)/);
+          if (anyClassMatch) return anyClassMatch[1];
+          
+          return null;
+        };
+        
+        const extractedClassName = extractClassName(code);
+        
+        if (extractedClassName) {
+          classNameToUse = extractedClassName;
+          actualCode = code;
+        } else {
+          classNameToUse = 'Main';
+          actualCode = `public class Main {
+          public static void main(String[] args) {
+              ${code}
+          }
+      }`;
+        }
+        
+        // File goes in the unique subdirectory
+        filename = path.join(uniqueSubDir, `${classNameToUse}.java`);
+        command = `cd "${uniqueSubDir}" && javac "${classNameToUse}.java" && java ${classNameToUse}`;
         break;
       
       case 'cpp':
@@ -181,9 +218,15 @@ router.post('/compile', async function(req, res, next) {
         
         // Clean up compiled files for Java and C/C++
         if (lang.toLowerCase() === 'java') {
-          const classFile = path.join(tempDir, `${uniqueId}.class`);
-          if (fs.existsSync(classFile)) {
-            fs.unlinkSync(classFile);
+          // For Java, remove the entire unique subdirectory
+          const uniqueSubDir = path.join(tempDir, uniqueId);
+          if (fs.existsSync(uniqueSubDir)) {
+            // Remove all files in the subdirectory
+            const files = fs.readdirSync(uniqueSubDir);
+            files.forEach(file => {
+              fs.unlinkSync(path.join(uniqueSubDir, file));
+            });
+            fs.rmdirSync(uniqueSubDir);
           }
         }
         

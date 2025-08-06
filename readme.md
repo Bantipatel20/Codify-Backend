@@ -163,20 +163,20 @@ A load test was performed using `load_test.sh` with 100 concurrent requests to t
 - **Concurrency:** 100
 
 **Status Code Distribution:**
-- `200 OK`: 50 requests (successfully processed)
-- `429 Too Many Requests`: 50 requests (rate/concurrency limit reached)
+- `200 OK`: 100 requests (all successfully processed)
+- `429 Too Many Requests`: 0 requests
 
 **Response Time Statistics:**
-- **Average:** 624.73 ms
-- **Minimum:** 250 ms
-- **Maximum:** 895 ms
+- **Average:** 853.2 ms
+- **Minimum:** 237 ms
+- **Maximum:** 1456 ms
 
 **Requests per second:** 100
 
 **Notes:**
-- The server handled 50% of requests successfully and rate-limited the rest, indicating effective concurrency control.
+- The server successfully handled all requests without rate limiting, demonstrating improved concurrency handling.
 - Raw results are saved to `/tmp/load_test_results.txt`.
 
 ---
 
-This demonstrates the backend’s ability to handle high concurrency and enforce rate limits on code
+This demonstrates the backend’s ability to handle high concurrency and process all code compilation requests

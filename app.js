@@ -4,6 +4,20 @@ var path = require('path');
 var cookieParser = require('cookie-parser');
 var logger = require('morgan');
 const mongoose = require('mongoose');
+const rateLimit = require('express-rate-limit');
+const queue = require('express-queue');
+
+// Rate limiting
+const compileLimit = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 50, // limit each IP to 50 requests per windowMs
+  message: { error: 'Too many compilation requests, try again later' }
+});
+
+// Queue middleware for compilation endpoint
+const compileQueue = queue({ activeLimit: 10, queuedLimit: 50 });
+
+
 
 mongoose.connect('mongodb://localhost:27017/codify').then(() => {
   console.log('Connected to MongoDB');
@@ -16,6 +30,8 @@ var indexRouter = require('./routes/index');
 var usersRouter = require('./routes/users');
 
 var app = express();
+app.use('/compile', compileLimit);
+app.use('/compile', compileQueue);
 
 // view engine setup
 app.set('views', path.join(__dirname, 'views'));

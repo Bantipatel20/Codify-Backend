@@ -6,6 +6,8 @@ var logger = require('morgan');
 const mongoose = require('mongoose');
 const rateLimit = require('express-rate-limit');
 const queue = require('express-queue');
+const cors = require("cors");
+
 
 // Rate limiting
 const compileLimit = rateLimit({
@@ -30,6 +32,10 @@ var indexRouter = require('./routes/index');
 var usersRouter = require('./routes/users');
 
 var app = express();
+
+// Allow requests from React frontend
+app.use(cors({ origin: "http://localhost:3000" }));
+
 app.use('/compile', compileLimit);
 app.use('/compile', compileQueue);
 
@@ -44,7 +50,7 @@ app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.use('/', indexRouter);
-app.use('/users', usersRouter);
+app.use('/user', usersRouter);
 
 // catch 404 and forward to error handler
 app.use(function(req, res, next) {

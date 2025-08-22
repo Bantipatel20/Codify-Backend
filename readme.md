@@ -141,6 +141,121 @@ The `User` schema defines the structure for user documents in MongoDB:
 
 See [`models/Users.js`](models/Users.js) for implementation details.
 
+## Problem Model
+
+The `Problem` schema defines coding problems for the platform, including metadata, test cases, and statistics.
+
+| Field                  | Type                | Required | Description                                                      |
+|------------------------|---------------------|----------|------------------------------------------------------------------|
+| title                  | String              | Yes      | Problem title (max 200 chars)                                    |
+| description            | String              | Yes      | Detailed problem description (max 2000 chars)                    |
+| difficulty             | String (enum)       | Yes      | Difficulty level: `Easy`, `Medium`, or `Hard` (default: `Easy`)  |
+| testCases              | Array of objects    | Yes      | List of test cases (`input`, `output` required for each)         |
+| createdBy              | ObjectId (User ref) | Yes      | Reference to the user who created the problem                    |
+| isActive               | Boolean             | No       | Problem visibility (default: `true`)                             |
+| tags                   | Array of String     | No       | Tags for categorization (lowercase, trimmed)                     |
+| totalSubmissions       | Number              | No       | Total number of submissions (default: `0`)                       |
+| successfulSubmissions  | Number              | No       | Number of successful submissions (default: `0`)                  |
+| createdAt              | Date                | No       | Creation timestamp (auto-set)                                    |
+| updatedAt              | Date                | No       | Last update timestamp (auto-set)                                 |
+| successRate (virtual)  | String              | No       | Percentage of successful submissions (auto-calculated)           |
+
+### Test Case Structure
+
+Each test case object contains:
+- `input`: String (required)
+- `output`: String (required)
+
+### Indexes
+
+- By `difficulty` and `isActive`
+- By `createdBy`
+- By `createdAt` (descending)
+
+### Virtuals
+
+- `successRate`: Returns the percentage of successful submissions.
+
+See [`models/Problem.js`](models/Problem.js)
+
+
+## Contest Model
+
+The `Contest` schema defines coding contests, including problems, participants, rules, analytics, and settings.
+
+| Field                   | Type                       | Required | Description                                                      |
+|-------------------------|----------------------------|----------|------------------------------------------------------------------|
+| title                   | String                     | Yes      | Contest title (max 200 chars)                                    |
+| description             | String                     | Yes      | Contest description (max 1000 chars)                             |
+| startDate               | Date                       | Yes      | Contest start date/time                                          |
+| endDate                 | Date                       | Yes      | Contest end date/time (must be after start)                      |
+| duration                | String                     | Yes      | Duration (e.g., "2h")                                            |
+| status                  | String (enum)              | No       | `Upcoming`, `Active`, `Completed`, `Cancelled` (default: Upcoming)|
+| rules                   | String                     | No       | Contest rules (max 2000 chars, default: Standard contest rules)  |
+| maxParticipants         | Number                     | Yes      | Maximum allowed participants (default: 100)                      |
+| problems                | Array of ContestProblem    | Yes      | Problems in contest (at least one required)                      |
+| participants            | Array of ContestParticipant| No       | Registered participants                                          |
+| participantSelection    | String (enum)              | No       | Selection mode: manual/department/semester/division/batch        |
+| filterCriteria          | Object                     | No       | Criteria for participant filtering                               |
+| totalPoints             | Number                     | No       | Total points for all problems                                    |
+| createdBy               | ObjectId (User ref)        | Yes      | Reference to contest creator                                     |
+| createdAt               | Date                       | No       | Creation timestamp                                               |
+| updatedAt               | Date                       | No       | Last update timestamp                                            |
+| analytics               | Object                     | No       | Contest statistics (submissions, scores, participation rate)     |
+| settings                | Object                     | No       | Contest settings (late submission, leaderboard, freeze, etc.)    |
+| isActive                | Boolean                    | No       | Contest visibility (default: true)                               |
+
+### ContestProblem Structure
+
+- `problemId`: ObjectId (Problem ref), required
+- `title`: String, required
+- `difficulty`: String (enum), required
+- `category`: String, required
+- `points`: Number, required
+- `order`: Number, optional
+- `solvedCount`: Number, optional
+- `attemptCount`: Number, optional
+
+### ContestParticipant Structure
+
+- `userId`: ObjectId (User ref), required
+- `name`, `email`, `department`, `semester`, `division`, `batch`: required
+- `score`, `submissions`: Number, default 0
+- `problemsAttempted`: Array of objects (problemId, attempts, solved, score, lastAttemptTime)
+- `registrationTime`, `lastActivityTime`: Date
+
+### FilterCriteria Structure
+
+- `department`, `semester`, `division`, `batch`: for filtering participants
+
+### Analytics
+
+- `totalSubmissions`, `successfulSubmissions`, `averageScore`, `participationRate`
+
+### Settings
+
+- `allowLateSubmission`, `showLeaderboard`, `showLeaderboardDuringContest`, `freezeLeaderboard`, `freezeTime`, `allowViewProblemsBeforeStart`, `penaltyPerWrongSubmission`
+
+### Virtuals
+
+- `durationInHours`: Contest duration in hours
+- `successRate`: Percentage of successful submissions
+- `activeParticipantsCount`: Number of participants with submissions
+
+### Methods
+
+- `isCurrentlyActive()`: Returns true if contest is active and within date range
+- `getLeaderboard()`: Returns sorted leaderboard with ranks
+- `addParticipant(user)`: Adds a user as participant (with checks)
+- Static methods: `findByStatus`, `findUpcoming`, `findActive`
+
+### Indexes
+
+- By `status`, `startDate`, `createdBy`, `participants.userId`, `createdAt`, `startDate`, `endDate`
+
+See [`models/Contest.js`](models/Contest.js)
+
+
 ## File Descriptions
 
 - [`app.js`](app.js): Main Express app, sets up middleware and routes.

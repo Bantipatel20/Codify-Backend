@@ -275,6 +275,62 @@ router.put('/user/:id', async function(req, res, next) {
     });
   }
 });
+// In your existing routes/users.js file, add this login route:
+
+/* POST login - Direct database authentication */
+router.post('/login', async function(req, res, next) {
+  try {
+    const { username, password } = req.body;
+
+    // Validate input
+    if (!username || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Username and password are required'
+      });
+    }
+
+    // Find user by username
+    const user = await User.findOne({ username: username });
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid username or password'
+      });
+    }
+
+    // Check if password matches
+    if (user.password !== password) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid username or password'
+      });
+    }
+
+    // Determine user role based on username
+    let role = 'client'; // default role for students
+    if (username === 'admin') {
+      role = 'admin';
+    }
+
+    // Return success with minimal user data
+    res.status(200).json({
+      success: true,
+      role: role,
+      username: user.username,
+      name: user.name,
+      userId: user._id.toString()
+    });
+
+  } catch (err) {
+    console.error('Login error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Login failed'
+    });
+  }
+});
 
 
 module.exports = router;

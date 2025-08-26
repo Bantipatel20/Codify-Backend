@@ -193,6 +193,7 @@ router.post('/user', async function(req, res, next) {
 });
 
 /* PUT update user by ID - Enhanced with validation */
+// Update your existing PUT route in routes/users.js
 router.put('/user/:id', async function(req, res, next) {
   try {
     const userId = req.params.id;
@@ -205,9 +206,7 @@ router.put('/user/:id', async function(req, res, next) {
       });
     }
 
-    // Don't allow password updates through this endpoint
     const updateData = { ...req.body };
-    delete updateData.password;
 
     // If email is being updated, check for duplicates
     if (updateData.email) {
@@ -221,6 +220,21 @@ router.put('/user/:id', async function(req, res, next) {
         return res.status(409).json({
           success: false,
           error: 'User with this email already exists'
+        });
+      }
+    }
+
+    // If username is being updated, check for duplicates
+    if (updateData.username) {
+      const existingUser = await User.findOne({ 
+        username: updateData.username,
+        _id: { $ne: userId }
+      });
+      
+      if (existingUser) {
+        return res.status(409).json({
+          success: false,
+          error: 'Username already exists'
         });
       }
     }
@@ -254,7 +268,7 @@ router.put('/user/:id', async function(req, res, next) {
     if (err.code === 11000) {
       return res.status(409).json({
         success: false,
-        error: 'User with this email already exists'
+        error: 'Username or email already exists'
       });
     }
     

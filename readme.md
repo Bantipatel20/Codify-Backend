@@ -114,6 +114,36 @@ The server runs on [http://localhost:5000](http://localhost:5000) by default.
 GET /users?page=2&limit=5&name=John&email=gmail
 ```
 
+
+### Contest Endpoints:
+- POST /api/contests - Create new contest
+- POST /api/contests/:id/register - Register participant
+- POST /api/contests/:id/status - Update contest status
+- GET /api/contests - Get all contests with pagination and filtering
+- GET /api/contests/:id - Get contest by ID
+- GET /api/contests/:id/leaderboard - Get contest leaderboard
+- GET /api/contests/status/:status - Get contests by status
+- GET /api/contests/filter/upcoming - Get upcoming contests
+- GET /api/contests/filter/active - Get active contests
+- GET /api/contests/:id/analytics - Get contest analytics
+- PUT /api/contests/:id - Update contest
+- DELETE /api/contests/:id - Delete contest (soft delete)
+
+
+### Problem Endpoints:
+
+- POST /api/problems - Create new problem
+- POST /api/problems/:id/test - Test solution against problem
+- GET /api/problems - Get all problems with pagination and filtering
+- GET /api/problems/:id - Get problem by ID
+- GET /api/problems/difficulty/:difficulty - Get problems by difficulty
+- GET /api/problems/tags/:tag - Get problems by tag
+- GET /api/problems/meta/tags - Get all unique tags
+- GET /api/problems/meta/statistics - Get problem statistics
+- PUT /api/problems/:id - Update problem
+- DELETE /api/problems/:id - Delete problem (soft delete)
+
+
 ### Error Handling
 
 - All endpoints return `success: false` and an `error` message on failure.

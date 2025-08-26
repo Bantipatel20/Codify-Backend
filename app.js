@@ -28,8 +28,11 @@ mongoose.connect('mongodb://localhost:27017/codify').then(() => {
 });
 
 
-var indexRouter = require('./routes/index');
+var indexRouter = require('./routes/compiler');
 var usersRouter = require('./routes/users');
+var contestRouter = require('./routes/contests');
+var problemRouter = require('./routes/problems');
+
 
 var app = express();
 
@@ -50,7 +53,10 @@ app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.use('/', indexRouter);
-app.use('/user', usersRouter);
+app.use('/', usersRouter);
+app.use('/api', contestRouter);
+app.use('/api', problemRouter);
+
 
 // catch 404 and forward to error handler
 app.use(function(req, res, next) {

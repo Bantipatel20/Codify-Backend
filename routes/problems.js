@@ -266,6 +266,7 @@ router.put('/:id', async function(req, res, next) {
 });
 
 /* DELETE problem by ID */
+/* DELETE problem by ID - PERMANENT DELETE */
 router.delete('/:id', async function(req, res, next) {
   try {
     const problemId = req.params.id;
@@ -285,17 +286,19 @@ router.delete('/:id', async function(req, res, next) {
       });
     }
 
-    // Soft delete by setting isActive to false
-    const deletedProblem = await Problem.findByIdAndUpdate(
-      problemId,
-      { isActive: false },
-      { new: true }
-    );
+    // Permanently delete the problem from database
+    const deletedProblem = await Problem.findByIdAndDelete(problemId);
 
     res.status(200).json({ 
       success: true,
-      message: 'Problem deleted successfully',
-      data: { deletedProblemId: problemId }
+      message: 'Problem permanently deleted from database',
+      data: { 
+        deletedProblemId: problemId,
+        deletedProblem: {
+          title: deletedProblem.title,
+          difficulty: deletedProblem.difficulty
+        }
+      }
     });
   } catch (err) {
     console.error('Delete problem error:', err);
@@ -306,6 +309,7 @@ router.delete('/:id', async function(req, res, next) {
     });
   }
 });
+
 
 /* GET problems by difficulty */
 router.get('/difficulty/:difficulty', async function(req, res, next) {

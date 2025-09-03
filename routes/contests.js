@@ -37,15 +37,38 @@ router.get('/', async function(req, res, next) {
       };
     }
 
+    // Get contests without populating problems first
     const [contests, totalCount] = await Promise.all([
       Contest.find(filter)
         .populate('createdBy', 'name email')
-        .populate('problems.problemId', 'title difficulty')
         .skip(skip)
         .limit(limit)
         .sort({ createdAt: -1 }),
       Contest.countDocuments(filter)
     ]);
+
+    // Manually populate existing problems only
+    for (let contest of contests) {
+      const existingProblemIds = contest.problems
+        .filter(p => !p.problemId.startsWith('manual_'))
+        .map(p => p.problemId);
+      
+      if (existingProblemIds.length > 0) {
+        const existingProblems = await Problem.find({ 
+          _id: { $in: existingProblemIds } 
+        }).select('title difficulty');
+        
+        // Map existing problems back to contest problems
+        contest.problems.forEach(contestProblem => {
+          if (!contestProblem.problemId.startsWith('manual_')) {
+            const dbProblem = existingProblems.find(p => p._id.toString() === contestProblem.problemId);
+            if (dbProblem) {
+              contestProblem.populatedProblem = dbProblem;
+            }
+          }
+        });
+      }
+    }
 
     res.status(200).json({
       success: true,
@@ -81,13 +104,33 @@ router.get('/:id', async function(req, res, next) {
     }
 
     const contest = await Contest.findById(contestId)
-      .populate('createdBy', 'name email')
-      .populate('problems.problemId', 'title description difficulty tags');
+      .populate('createdBy', 'name email');
 
     if (!contest) {
       return res.status(404).json({ 
         success: false,
         error: 'Contest not found' 
+      });
+    }
+
+    // Manually populate existing problems only
+    const existingProblemIds = contest.problems
+      .filter(p => !p.problemId.startsWith('manual_'))
+      .map(p => p.problemId);
+    
+    if (existingProblemIds.length > 0) {
+      const existingProblems = await Problem.find({ 
+        _id: { $in: existingProblemIds } 
+      }).select('title description difficulty tags');
+      
+      // Map existing problems back to contest problems
+      contest.problems.forEach(contestProblem => {
+        if (!contestProblem.problemId.startsWith('manual_')) {
+          const dbProblem = existingProblems.find(p => p._id.toString() === contestProblem.problemId);
+          if (dbProblem) {
+            contestProblem.populatedProblem = dbProblem;
+          }
+        }
       });
     }
 
@@ -105,7 +148,7 @@ router.get('/:id', async function(req, res, next) {
   }
 });
 
-/* POST create new contest */
+/* POST create new contest - UPDATED to handle manual problems */
 router.post('/', async function(req, res, next) {
   try {
     const {
@@ -123,6 +166,12 @@ router.post('/', async function(req, res, next) {
       settings
     } = req.body;
 
+    console.log('📥 Received contest creation request:', {
+      title,
+      problemsCount: problems?.length,
+      problems: problems?.map(p => ({ id: p.problemId, title: p.title, hasManual: !!p.manualProblem }))
+    });
+
     // Validate required fields
     if (!title || !description || !startDate || !endDate || !duration || !createdBy) {
       return res.status(400).json({
@@ -139,18 +188,44 @@ router.post('/', async function(req, res, next) {
       });
     }
 
-    // Verify all problems exist
-    const problemIds = problems.map(p => p.problemId);
-    const existingProblems = await Problem.find({ 
-      _id: { $in: problemIds }, 
-      isActive: true 
+    // Separate manual problems from existing problems
+    const manualProblems = problems.filter(p => p.problemId && p.problemId.startsWith('manual_'));
+    const existingProblemIds = problems
+      .filter(p => p.problemId && !p.problemId.startsWith('manual_'))
+      .map(p => p.problemId);
+
+    console.log('🔍 Problem analysis:', {
+      manualProblemsCount: manualProblems.length,
+      existingProblemsCount: existingProblemIds.length,
+      manualProblemIds: manualProblems.map(p => p.problemId),
+      existingProblemIds: existingProblemIds
     });
 
-    if (existingProblems.length !== problemIds.length) {
-      return res.status(400).json({
-        success: false,
-        error: 'One or more problems do not exist or are inactive'
-      });
+    // Verify existing problems exist (skip manual ones)
+    let existingProblems = [];
+    if (existingProblemIds.length > 0) {
+      try {
+        existingProblems = await Problem.find({ 
+          _id: { $in: existingProblemIds }, 
+          isActive: true 
+        });
+
+        if (existingProblems.length !== existingProblemIds.length) {
+          const foundIds = existingProblems.map(p => p._id.toString());
+          const missingIds = existingProblemIds.filter(id => !foundIds.includes(id));
+          return res.status(400).json({
+            success: false,
+            error: `One or more existing problems do not exist or are inactive. Missing: ${missingIds.join(', ')}`
+          });
+        }
+      } catch (problemError) {
+        console.error('Error validating existing problems:', problemError);
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid problem ID format in existing problems',
+          details: problemError.message
+        });
+      }
     }
 
     // Verify creator exists
@@ -162,7 +237,7 @@ router.post('/', async function(req, res, next) {
       });
     }
 
-    // Create contest data
+    // Create contest data with proper problem handling
     const contestData = {
       title,
       description,
@@ -171,34 +246,83 @@ router.post('/', async function(req, res, next) {
       duration,
       rules,
       maxParticipants: maxParticipants || 100,
-      problems: problems.map((p, index) => ({
-        problemId: p.problemId,
-        title: p.title,
-        difficulty: p.difficulty,
-        category: p.category || 'General',
-        points: p.points,
-        order: p.order || index + 1
-      })),
+      problems: problems.map((p, index) => {
+        const problemData = {
+          problemId: p.problemId, // Keep original ID (even for manual problems)
+          title: p.title,
+          difficulty: p.difficulty,
+          category: p.category || 'General',
+          points: p.points,
+          order: p.order || index + 1,
+          solvedCount: 0,
+          attemptCount: 0
+        };
+
+        // Add manual problem data if it exists
+        if (p.manualProblem) {
+          problemData.manualProblem = {
+            description: p.manualProblem.description,
+            inputFormat: p.manualProblem.inputFormat,
+            outputFormat: p.manualProblem.outputFormat,
+            constraints: p.manualProblem.constraints,
+            sampleInput: p.manualProblem.sampleInput,
+            sampleOutput: p.manualProblem.sampleOutput,
+            explanation: p.manualProblem.explanation,
+            testCases: p.manualProblem.testCases || []
+          };
+        }
+
+        return problemData;
+      }),
       createdBy,
       participantSelection: participantSelection || 'manual',
       filterCriteria: filterCriteria || {},
       settings: settings || {}
     };
 
+    console.log('💾 Creating contest with data:', {
+      title: contestData.title,
+      problemsCount: contestData.problems.length,
+      manualProblemsInData: contestData.problems.filter(p => p.manualProblem).length,
+      problemIds: contestData.problems.map(p => p.problemId)
+    });
+
     const newContest = new Contest(contestData);
     const savedContest = await newContest.save();
 
-    const populatedContest = await Contest.findById(savedContest._id)
-      .populate('createdBy', 'name email')
-      .populate('problems.problemId', 'title difficulty');
+    console.log('✅ Contest created successfully:', savedContest._id);
+
+    // Return the contest without trying to populate manual problems
+    const responseContest = await Contest.findById(savedContest._id)
+      .populate('createdBy', 'name email');
+
+    // Manually add existing problem details if any
+    const responseExistingProblemIds = responseContest.problems
+      .filter(p => !p.problemId.startsWith('manual_'))
+      .map(p => p.problemId);
+    
+    if (responseExistingProblemIds.length > 0) {
+      const responseExistingProblems = await Problem.find({ 
+        _id: { $in: responseExistingProblemIds } 
+      }).select('title difficulty');
+      
+      responseContest.problems.forEach(contestProblem => {
+        if (!contestProblem.problemId.startsWith('manual_')) {
+          const dbProblem = responseExistingProblems.find(p => p._id.toString() === contestProblem.problemId);
+          if (dbProblem) {
+            contestProblem.populatedProblem = dbProblem;
+          }
+        }
+      });
+    }
 
     res.status(201).json({
       success: true,
       message: 'Contest created successfully',
-      data: populatedContest
+      data: responseContest
     });
   } catch (err) {
-    console.error('Create contest error:', err);
+    console.error('❌ Create contest error:', err);
     
     if (err.name === 'ValidationError') {
       const validationErrors = Object.values(err.errors).map(e => e.message);
@@ -206,6 +330,14 @@ router.post('/', async function(req, res, next) {
         success: false,
         error: 'Validation failed',
         details: validationErrors
+      });
+    }
+
+    if (err.name === 'CastError') {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid data format in request',
+        details: `Cast error: ${err.message}`
       });
     }
 
@@ -217,7 +349,7 @@ router.post('/', async function(req, res, next) {
   }
 });
 
-/* PUT update contest by ID */
+/* PUT update contest by ID - UPDATED to handle manual problems */
 router.put('/:id', async function(req, res, next) {
   try {
     const contestId = req.params.id;
@@ -249,19 +381,24 @@ router.put('/:id', async function(req, res, next) {
     delete updateData.participants; // Don't allow direct participant updates
     delete updateData.analytics; // Don't allow direct analytics updates
 
-    // If problems are being updated, validate them
+    // If problems are being updated, validate existing ones (skip manual)
     if (updateData.problems) {
-      const problemIds = updateData.problems.map(p => p.problemId);
-      const existingProblems = await Problem.find({ 
-        _id: { $in: problemIds }, 
-        isActive: true 
-      });
+      const existingProblemIds = updateData.problems
+        .filter(p => p.problemId && !p.problemId.startsWith('manual_'))
+        .map(p => p.problemId);
 
-      if (existingProblems.length !== problemIds.length) {
-        return res.status(400).json({
-          success: false,
-          error: 'One or more problems do not exist or are inactive'
+      if (existingProblemIds.length > 0) {
+        const existingProblems = await Problem.find({ 
+          _id: { $in: existingProblemIds }, 
+          isActive: true 
         });
+
+        if (existingProblems.length !== existingProblemIds.length) {
+          return res.status(400).json({
+            success: false,
+            error: 'One or more existing problems do not exist or are inactive'
+          });
+        }
       }
     }
 
@@ -273,8 +410,27 @@ router.put('/:id', async function(req, res, next) {
         runValidators: true 
       }
     )
-    .populate('createdBy', 'name email')
-    .populate('problems.problemId', 'title difficulty');
+    .populate('createdBy', 'name email');
+
+    // Manually populate existing problems
+    const existingProblemIds = updatedContest.problems
+      .filter(p => !p.problemId.startsWith('manual_'))
+      .map(p => p.problemId);
+    
+    if (existingProblemIds.length > 0) {
+      const existingProblems = await Problem.find({ 
+        _id: { $in: existingProblemIds } 
+      }).select('title difficulty');
+      
+      updatedContest.problems.forEach(contestProblem => {
+        if (!contestProblem.problemId.startsWith('manual_')) {
+          const dbProblem = existingProblems.find(p => p._id.toString() === contestProblem.problemId);
+          if (dbProblem) {
+            contestProblem.populatedProblem = dbProblem;
+          }
+        }
+      });
+    }
 
     res.status(200).json({
       success: true,
@@ -481,8 +637,29 @@ router.get('/status/:status', async function(req, res, next) {
     }
 
     const contests = await Contest.findByStatus(status)
-      .populate('createdBy', 'name email')
-      .populate('problems.problemId', 'title difficulty');
+      .populate('createdBy', 'name email');
+
+    // Manually populate existing problems for each contest
+    for (let contest of contests) {
+      const existingProblemIds = contest.problems
+        .filter(p => !p.problemId.startsWith('manual_'))
+        .map(p => p.problemId);
+      
+      if (existingProblemIds.length > 0) {
+        const existingProblems = await Problem.find({ 
+          _id: { $in: existingProblemIds } 
+        }).select('title difficulty');
+        
+        contest.problems.forEach(contestProblem => {
+          if (!contestProblem.problemId.startsWith('manual_')) {
+            const dbProblem = existingProblems.find(p => p._id.toString() === contestProblem.problemId);
+            if (dbProblem) {
+              contestProblem.populatedProblem = dbProblem;
+            }
+          }
+        });
+      }
+    }
 
     res.status(200).json({
       success: true,
@@ -503,8 +680,29 @@ router.get('/status/:status', async function(req, res, next) {
 router.get('/filter/upcoming', async function(req, res, next) {
   try {
     const contests = await Contest.findUpcoming()
-      .populate('createdBy', 'name email')
-      .populate('problems.problemId', 'title difficulty');
+      .populate('createdBy', 'name email');
+
+    // Manually populate existing problems for each contest
+    for (let contest of contests) {
+      const existingProblemIds = contest.problems
+        .filter(p => !p.problemId.startsWith('manual_'))
+        .map(p => p.problemId);
+      
+      if (existingProblemIds.length > 0) {
+        const existingProblems = await Problem.find({ 
+          _id: { $in: existingProblemIds } 
+        }).select('title difficulty');
+        
+        contest.problems.forEach(contestProblem => {
+          if (!contestProblem.problemId.startsWith('manual_')) {
+            const dbProblem = existingProblems.find(p => p._id.toString() === contestProblem.problemId);
+            if (dbProblem) {
+              contestProblem.populatedProblem = dbProblem;
+            }
+          }
+        });
+      }
+    }
 
     res.status(200).json({
       success: true,
@@ -525,8 +723,29 @@ router.get('/filter/upcoming', async function(req, res, next) {
 router.get('/filter/active', async function(req, res, next) {
   try {
     const contests = await Contest.findActive()
-      .populate('createdBy', 'name email')
-      .populate('problems.problemId', 'title difficulty');
+      .populate('createdBy', 'name email');
+
+    // Manually populate existing problems for each contest
+    for (let contest of contests) {
+      const existingProblemIds = contest.problems
+        .filter(p => !p.problemId.startsWith('manual_'))
+        .map(p => p.problemId);
+      
+      if (existingProblemIds.length > 0) {
+        const existingProblems = await Problem.find({ 
+          _id: { $in: existingProblemIds } 
+        }).select('title difficulty');
+        
+        contest.problems.forEach(contestProblem => {
+          if (!contestProblem.problemId.startsWith('manual_')) {
+            const dbProblem = existingProblems.find(p => p._id.toString() === contestProblem.problemId);
+            if (dbProblem) {
+              contestProblem.populatedProblem = dbProblem;
+            }
+          }
+        });
+      }
+    }
 
     res.status(200).json({
       success: true,
@@ -605,13 +824,32 @@ router.get('/:id/analytics', async function(req, res, next) {
       });
     }
 
-    const contest = await Contest.findById(contestId)
-      .populate('problems.problemId', 'title difficulty');
+    const contest = await Contest.findById(contestId);
 
     if (!contest) {
       return res.status(404).json({ 
         success: false,
         error: 'Contest not found' 
+      });
+    }
+
+    // Manually populate existing problems
+    const existingProblemIds = contest.problems
+      .filter(p => !p.problemId.startsWith('manual_'))
+      .map(p => p.problemId);
+    
+    if (existingProblemIds.length > 0) {
+      const existingProblems = await Problem.find({ 
+        _id: { $in: existingProblemIds } 
+      }).select('title difficulty');
+      
+      contest.problems.forEach(contestProblem => {
+        if (!contestProblem.problemId.startsWith('manual_')) {
+          const dbProblem = existingProblems.find(p => p._id.toString() === contestProblem.problemId);
+          if (dbProblem) {
+            contestProblem.populatedProblem = dbProblem;
+          }
+        }
       });
     }
 
@@ -635,7 +873,8 @@ router.get('/:id/analytics', async function(req, res, next) {
         points: p.points,
         solvedCount: p.solvedCount,
         attemptCount: p.attemptCount,
-        successRate: p.attemptCount > 0 ? ((p.solvedCount / p.attemptCount) * 100).toFixed(2) : 0
+        successRate: p.attemptCount > 0 ? ((p.solvedCount / p.attemptCount) * 100).toFixed(2) : 0,
+        isManual: !!p.manualProblem
       })),
       departmentWise: {},
       semesterWise: {}

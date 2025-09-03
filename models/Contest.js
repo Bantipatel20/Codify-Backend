@@ -43,8 +43,7 @@ const ContestParticipantSchema = new Schema({
     },
     problemsAttempted: [{
         problemId: {
-            type: Schema.Types.ObjectId,
-            ref: 'Problem',
+            type: String, // Changed from ObjectId to String to support manual problem IDs
             required: true
         },
         attempts: {
@@ -73,10 +72,10 @@ const ContestParticipantSchema = new Schema({
     }
 }, { _id: false });
 
+// UPDATED: ContestProblemSchema to support manual problems
 const ContestProblemSchema = new Schema({
     problemId: {
-        type: Schema.Types.ObjectId,
-        ref: 'Problem',
+        type: String, // Changed from ObjectId to String to support manual problem IDs
         required: true
     },
     title: {
@@ -108,6 +107,44 @@ const ContestProblemSchema = new Schema({
     attemptCount: {
         type: Number,
         default: 0
+    },
+    // NEW: Manual problem data - stores complete problem information for manual problems
+    manualProblem: {
+        description: {
+            type: String
+        },
+        inputFormat: {
+            type: String
+        },
+        outputFormat: {
+            type: String
+        },
+        constraints: {
+            type: String
+        },
+        sampleInput: {
+            type: String
+        },
+        sampleOutput: {
+            type: String
+        },
+        explanation: {
+            type: String
+        },
+        testCases: [{
+            input: {
+                type: String,
+                required: true
+            },
+            expectedOutput: {
+                type: String,
+                required: true
+            },
+            isHidden: {
+                type: Boolean,
+                default: false
+            }
+        }]
     }
 }, { _id: false });
 
@@ -283,7 +320,9 @@ ContestSchema.index({ createdBy: 1 });
 ContestSchema.index({ 'participants.userId': 1 });
 ContestSchema.index({ createdAt: -1 });
 ContestSchema.index({ startDate: 1, endDate: 1 });
+ContestSchema.index({ 'problems.problemId': 1 }); // NEW: Index for problem lookups
 
+// UPDATED: Pre-save middleware
 ContestSchema.pre('save', function(next) {
     this.updatedAt = Date.now();
     
@@ -298,6 +337,7 @@ ContestSchema.pre('save', function(next) {
     next();
 });
 
+// Virtual properties
 ContestSchema.virtual('durationInHours').get(function() {
     if (this.startDate && this.endDate) {
         const diffHours = Math.abs(this.endDate - this.startDate) / 36e5;
@@ -315,6 +355,17 @@ ContestSchema.virtual('activeParticipantsCount').get(function() {
     return this.participants.filter(p => p.submissions > 0).length;
 });
 
+// NEW: Virtual to get count of manual problems
+ContestSchema.virtual('manualProblemsCount').get(function() {
+    return this.problems.filter(p => p.manualProblem && Object.keys(p.manualProblem).length > 0).length;
+});
+
+// NEW: Virtual to get count of existing problems
+ContestSchema.virtual('existingProblemsCount').get(function() {
+    return this.problems.filter(p => !p.problemId.startsWith('manual_')).length;
+});
+
+// Instance methods
 ContestSchema.methods.isCurrentlyActive = function() {
     const now = new Date();
     return this.status === 'Active' && now >= this.startDate && now <= this.endDate;
@@ -356,6 +407,28 @@ ContestSchema.methods.addParticipant = function(user) {
     return this.save();
 };
 
+// NEW: Method to get problem by ID (works for both manual and existing problems)
+ContestSchema.methods.getProblemById = function(problemId) {
+    return this.problems.find(p => p.problemId === problemId);
+};
+
+// NEW: Method to check if a problem is manual
+ContestSchema.methods.isManualProblem = function(problemId) {
+    const problem = this.getProblemById(problemId);
+    return problem && (problemId.startsWith('manual_') || (problem.manualProblem && Object.keys(problem.manualProblem).length > 0));
+};
+
+// NEW: Method to get manual problems only
+ContestSchema.methods.getManualProblems = function() {
+    return this.problems.filter(p => this.isManualProblem(p.problemId));
+};
+
+// NEW: Method to get existing problems only
+ContestSchema.methods.getExistingProblems = function() {
+    return this.problems.filter(p => !this.isManualProblem(p.problemId));
+};
+
+// Static methods
 ContestSchema.statics.findByStatus = function(status) {
     return this.find({ status, isActive: true }).sort({ startDate: -1 });
 };
@@ -376,6 +449,14 @@ ContestSchema.statics.findActive = function() {
         endDate: { $gte: now },
         isActive: true 
     }).sort({ startDate: 1 });
+};
+
+// NEW: Static method to find contests with manual problems
+ContestSchema.statics.findWithManualProblems = function() {
+    return this.find({ 
+        'problems.manualProblem': { $exists: true, $ne: null },
+        isActive: true 
+    }).sort({ createdAt: -1 });
 };
 
 ContestSchema.set('toJSON', { virtuals: true });

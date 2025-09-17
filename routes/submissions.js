@@ -11,7 +11,7 @@ const { v4: uuidv4 } = require('uuid');
 const Submission = require('../models/Submission');
 const Problem = require('../models/Problem');
 const Contest = require('../models/Contest');
-const User = require('../models/Users');
+const User = require('../models/Users');        
 
 const execAsync = promisify(exec);
 
@@ -579,6 +579,74 @@ router.get('/submission/:id', async function(req, res, next) {
         res.status(500).json({
             success: false,
             error: 'Failed to retrieve submission',
+            details: err.message
+        });
+    }
+});
+// Add this route to your existing routes/submissions.js file
+
+/* GET user submissions - Frontend compatible endpoint */
+router.get('/user/:userId', async function(req, res, next) {
+    try {
+        const userId = req.params.userId;
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 100;
+        const skip = (page - 1) * limit;
+
+        if (!userId.match(/^[0-9a-fA-F]{24}$/)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid user ID format'
+            });
+        }
+
+        // Verify user exists
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                error: 'User not found'
+            });
+        }
+
+        const filter = { userId };
+        
+        // Apply filters from query params
+        if (req.query.status && req.query.status !== 'All') {
+            filter.status = req.query.status.toLowerCase().replace(' ', '_');
+        }
+        
+        if (req.query.language && req.query.language !== 'All') {
+            filter.language = req.query.language.toLowerCase();
+        }
+
+        const [submissions, totalCount] = await Promise.all([
+            Submission.find(filter)
+                .populate('contestId', 'title')
+                .skip(skip)
+                .limit(limit)
+                .sort({ submittedAt: -1 })
+                .lean(),
+            Submission.countDocuments(filter)
+        ]);
+
+        res.status(200).json({
+            success: true,
+            data: submissions,
+            pagination: {
+                currentPage: page,
+                totalPages: Math.ceil(totalCount / limit),
+                totalSubmissions: totalCount,
+                hasNextPage: page < Math.ceil(totalCount / limit),
+                hasPrevPage: page > 1
+            }
+        });
+        
+    } catch (err) {
+        console.error('Get user submissions error:', err);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to retrieve user submissions',
             details: err.message
         });
     }

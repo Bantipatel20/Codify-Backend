@@ -143,6 +143,108 @@ GET /users?page=2&limit=5&name=John&email=gmail
 - PUT /api/problems/:id - Update problem
 - DELETE /api/problems/:id - Delete problem (soft delete)
 
+## Submission API Endpoints
+
+### Submit Code
+
+- **POST** `/api/submissions/submit`
+  - **Body:** `{ userId, problemId, contestId (optional), code, language }`
+  - **Returns:** `{ success, message, submissionId, status, totalTestCases }`
+  - Queues submission for evaluation and returns immediately.
+
+### Get Submission Status
+
+- **GET** `/api/submissions/submission/:id`
+  - **Returns:** Submission details, including test case results and evaluation status.
+
+### Get User Submissions
+
+- **GET** `/api/submissions/user/:userId/submissions?page=1&limit=20&status=accepted&problemId=...&contestId=...`
+  - **Returns:** Paginated list of submissions for a user (code omitted for privacy).
+
+### Get Problem Submissions
+
+- **GET** `/api/submissions/problem/:problemId/submissions?page=1&limit=20&status=accepted`
+  - **Returns:** Paginated list of public submissions for a problem.
+
+### Get Submission Statistics
+
+- **GET** `/api/submissions/stats/submissions`
+  - **Returns:**  
+    - `total`: Total submissions  
+    - `accepted`: Accepted submissions  
+    - `acceptanceRate`: Percentage accepted  
+    - `languageDistribution`: Submissions per language  
+    - `statusDistribution`: Submissions per status  
+    - `activeEvaluations`: Currently running evaluations  
+    - `queuedEvaluations`: Submissions waiting in queue
+
+---
+
+See [`models/Submission.js`](models/Submission.js) and [`routes/submissions.js`](routes/submissions.js) for implementation details.
+
+
+
+
+### AutoSave API Endpoints
+
+#### Save Code (Auto-Save)
+- **POST** `/api/autosave/save`
+  - **Body:** `{ userId, problemId, contestId (optional), code, language, metadata (optional) }`
+  - **Returns:** `{ success, message, autoSaveId, lastSavedAt, codeLength }`
+  - Creates or updates an auto-save for the user/problem/contest.
+
+#### Get Restore Options
+- **GET** `/api/autosave/restore-options/:userId/:problemId?contestId=...`
+  - **Returns:**  
+    - `hasAutoSave`: Boolean  
+    - `hasLatestSubmission`: Boolean  
+    - `autoSave`: Latest auto-save info  
+    - `latestSubmission`: Latest submission info  
+    - `recommendations`: Array of suggestions (e.g., "continue from auto-save", "review last submission", "start fresh")
+
+#### Load Auto-Saved Code
+- **GET** `/api/autosave/load/:userId/:problemId?contestId=...`
+  - **Returns:** `{ code, language, lastSavedAt, metadata }`
+  - Loads the latest active auto-save for the user/problem/contest.
+
+#### Load Latest Submission Code
+- **GET** `/api/autosave/submission/:userId/:problemId?contestId=...`
+  - **Returns:** `{ code, language, status, score, submittedAt, passedTestCases, totalTestCases }`
+  - Loads the code from the user's latest submission for the problem.
+
+#### Clear Auto-Saved Code
+- **DELETE** `/api/autosave/clear/:userId/:problemId?contestId=...`
+  - **Returns:** `{ success, message }`
+  - Marks the auto-save as inactive (soft delete).
+
+#### List User's Auto-Saves
+- **GET** `/api/autosave/user/:userId?page=1&limit=20`
+  - **Returns:** Paginated list of user's active auto-saves (without full code), with problem and contest titles.
+
+#### Cleanup Old Auto-Saves
+- **POST** `/api/autosave/cleanup`
+  - **Returns:** `{ success, message, deletedCount }`
+  - Removes old/inactive auto-saves (also runs daily via scheduled task).
+
+#### Auto-Save Statistics
+- **GET** `/api/autosave/stats/overview`
+  - **Returns:**  
+    - `total`: Total auto-saves  
+    - `active`: Active auto-saves  
+    - `recentlyActive`: Auto-saves in last 24h  
+    - `languageDistribution`: Array of `{ language, count }`
+
+---
+
+### Scheduled Tasks
+
+- Old/inactive auto-saves are cleaned up daily at 2 AM via a scheduled cron job (`utils/scheduledTasks.js`).
+
+---
+
+See [`models/AutoSave.js`](models/AutoSave.js) and [`routes/autosave.js`](routes/autosave.js) for implementation details.
+
 
 ### Error Handling
 
@@ -190,6 +292,55 @@ The `Problem` schema defines coding problems for the platform, including metadat
 | updatedAt              | Date                | No       | Last update timestamp (auto-set)                                 |
 | successRate (virtual)  | String              | No       | Percentage of successful submissions (auto-calculated)           |
 
+
+
+## Submission Model
+
+The `Submission` schema tracks user code submissions, their evaluation status, and test case results.
+
+| Field              | Type                      | Required | Description                                                      |
+|--------------------|---------------------------|----------|------------------------------------------------------------------|
+| userId             | ObjectId (User ref)       | Yes      | Reference to the submitting user                                 |
+| problemId          | String/ObjectId           | Yes      | Problem ID (can be manual or DB problem)                         |
+| contestId          | ObjectId (Contest ref)    | No       | Reference to contest (null for standalone)                       |
+| code               | String                    | Yes      | Submitted code (max 50KB)                                        |
+| language           | String (enum)             | Yes      | Language: python, javascript, java, cpp, c, go, ruby, php        |
+| status             | String (enum)             | No       | Submission status: pending, running, accepted, wrong_answer, etc.|
+| score              | Number                    | No       | Score for this submission (default: 0)                           |
+| totalTestCases     | Number                    | Yes      | Number of test cases                                             |
+| passedTestCases    | Number                    | No       | Number of passed test cases                                      |
+| testCaseResults    | Array of objects          | No       | Results for each test case (see below)                           |
+| compilationOutput  | String                    | No       | Compilation errors/warnings                                      |
+| executionTime      | Number                    | No       | Total execution time (ms)                                        |
+| memoryUsed         | Number                    | No       | Peak memory usage (bytes)                                        |
+| submittedAt        | Date                      | No       | Submission timestamp                                             |
+| evaluatedAt        | Date                      | No       | Evaluation timestamp                                             |
+| isPublic           | Boolean                   | No       | Public visibility (default: true)                                |
+| successRate (virtual) | String                 | No       | Percentage of passed test cases                                  |
+
+**TestCaseResult Structure:**
+
+| Field           | Type    | Description                                 |
+|-----------------|---------|---------------------------------------------|
+| testCaseIndex   | Number  | Index of the test case                      |
+| input           | String  | Input for the test case                     |
+| expectedOutput  | String  | Expected output                             |
+| actualOutput    | String  | Actual output from code                     |
+| status          | String  | passed, failed, error, timeout              |
+| executionTime   | Number  | Execution time (ms)                         |
+| memoryUsed      | Number  | Memory used (bytes)                         |
+| errorMessage    | String  | Error message if any                        |
+
+**Indexes:**  
+- `{ userId, submittedAt }`, `{ problemId, status }`, `{ contestId, userId }`, `{ status, submittedAt }`
+
+**Virtuals & Methods:**  
+- `successRate`: Percentage of passed test cases  
+- `isAccepted()`: Returns true if all test cases passed  
+- `calculateScore(maxScore)`: Calculates partial score
+
+---
+
 ### Test Case Structure
 
 Each test case object contains:
@@ -234,6 +385,35 @@ The `Contest` schema defines coding contests, including problems, participants, 
 | analytics               | Object                     | No       | Contest statistics (submissions, scores, participation rate)     |
 | settings                | Object                     | No       | Contest settings (late submission, leaderboard, freeze, etc.)    |
 | isActive                | Boolean                    | No       | Contest visibility (default: true)                               |
+
+
+## AutoSave Feature
+
+The AutoSave API allows users to automatically save, restore, and manage their in-progress code for problems and contests. This helps prevent code loss and enables smooth recovery of work.
+
+### AutoSave Model
+
+| Field         | Type                | Required | Description                                      |
+|---------------|---------------------|----------|--------------------------------------------------|
+| userId        | ObjectId (User ref) | Yes      | Reference to the user                            |
+| problemId     | String/ObjectId     | Yes      | Problem ID (can be manual or DB problem)         |
+| contestId     | ObjectId (Contest)  | No       | Contest ID if code is for a contest problem      |
+| code          | String              | Yes      | Auto-saved code                                  |
+| language      | String              | Yes      | Programming language (lowercase)                 |
+| metadata      | Object              | No       | Additional info (e.g., cursor position, theme)   |
+| isActive      | Boolean             | No       | Whether this auto-save is active (default: true) |
+| lastSavedAt   | Date                | No       | Last save timestamp (auto-set)                   |
+
+**Indexes:**  
+- `{ userId, problemId, contestId, isActive }`  
+- `{ lastSavedAt }`
+
+**Virtuals & Methods:**  
+- `isRecent()`: Returns true if auto-save is recent (e.g., within 1 hour)
+- `cleanupOld()`: Static method to remove old/inactive auto-saves
+
+---
+
 
 ### ContestProblem Structure
 

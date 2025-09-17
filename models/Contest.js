@@ -459,6 +459,35 @@ ContestSchema.statics.findWithManualProblems = function() {
     }).sort({ createdAt: -1 });
 };
 
+
+// Method to get user's best submission for a problem
+ContestSchema.methods.getUserBestSubmission = async function(userId, problemId) {
+    const Submission = require('./Submission');
+    return await Submission.findOne({
+        userId,
+        problemId,
+        contestId: this._id
+    }).sort({ score: -1, submittedAt: 1 });
+};
+
+// Method to get contest submission statistics
+ContestSchema.methods.getSubmissionStats = async function() {
+    const Submission = require('./Submission');
+    
+    const stats = await Submission.aggregate([
+        { $match: { contestId: this._id } },
+        {
+            $group: {
+                _id: '$status',
+                count: { $sum: 1 },
+                avgScore: { $avg: '$score' }
+            }
+        }
+    ]);
+    
+    return stats;
+};
+
 ContestSchema.set('toJSON', { virtuals: true });
 ContestSchema.set('toObject', { virtuals: true });
 

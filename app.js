@@ -32,7 +32,8 @@ var indexRouter = require('./routes/compiler');
 var usersRouter = require('./routes/users');
 var contestRouter = require('./routes/contests');
 var problemRouter = require('./routes/problems');
-
+var submissionRouter = require('./routes/submissions');
+var autoSaveRouter = require('./routes/autosave');
 
 var app = express();
 
@@ -56,6 +57,8 @@ app.use('/', indexRouter);
 app.use('/', usersRouter);
 app.use('/api/contests', contestRouter);
 app.use('/api/problems', problemRouter);
+app.use('/api/submissions', submissionRouter);
+app.use('/api/autosave', autoSaveRouter);
 
 
 // catch 404 and forward to error handler

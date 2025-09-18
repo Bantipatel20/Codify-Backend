@@ -46,6 +46,141 @@ class SubmissionSemaphore {
 
 const submissionSemaphore = new SubmissionSemaphore(10); // Allow 10 concurrent submissions
 
+/* GET all submissions - Admin endpoint for tracking */
+router.get('/', async function(req, res, next) {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 100;
+        const skip = (page - 1) * limit;
+
+        // Build filter object
+        const filter = {};
+        
+        if (req.query.userId) {
+            filter.userId = req.query.userId;
+        }
+        
+        if (req.query.problemId) {
+            filter.problemId = req.query.problemId;
+        }
+        
+        if (req.query.contestId) {
+            filter.contestId = req.query.contestId;
+        }
+        
+        if (req.query.status && req.query.status !== 'All') {
+            filter.status = req.query.status.toLowerCase().replace(' ', '_');
+        }
+        
+        if (req.query.language && req.query.language !== 'All') {
+            filter.language = req.query.language.toLowerCase();
+        }
+        
+        // Date filtering
+        if (req.query.startDate || req.query.endDate) {
+            filter.submittedAt = {};
+            if (req.query.startDate) {
+                filter.submittedAt.$gte = new Date(req.query.startDate);
+            }
+            if (req.query.endDate) {
+                filter.submittedAt.$lte = new Date(req.query.endDate);
+            }
+        }
+
+        console.log('Fetching submissions with filter:', filter);
+
+        const [submissions, totalCount] = await Promise.all([
+            Submission.find(filter)
+                .populate('userId', 'name username email')
+                .populate('contestId', 'title')
+                .select('-code -testCaseResults') // Exclude large fields for list view
+                .skip(skip)
+                .limit(limit)
+                .sort({ submittedAt: -1 })
+                .lean(),
+            Submission.countDocuments(filter)
+        ]);
+
+        console.log(`Found ${submissions.length} submissions out of ${totalCount} total`);
+
+        res.status(200).json({
+            success: true,
+            data: submissions,
+            pagination: {
+                currentPage: page,
+                totalPages: Math.ceil(totalCount / limit),
+                totalSubmissions: totalCount,
+                hasNextPage: page < Math.ceil(totalCount / limit),
+                hasPrevPage: page > 1,
+                limit: limit
+            }
+        });
+        
+    } catch (err) {
+        console.error('Get all submissions error:', err);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to retrieve submissions',
+            details: err.message
+        });
+    }
+});
+
+/* GET submission statistics - Enhanced version */
+router.get('/stats/overview', async function(req, res, next) {
+    try {
+        const [
+            totalSubmissions,
+            acceptedSubmissions,
+            todaySubmissions,
+            languageStats,
+            statusStats
+        ] = await Promise.all([
+            Submission.countDocuments(),
+            Submission.countDocuments({ status: 'accepted' }),
+            Submission.countDocuments({
+                submittedAt: {
+                    $gte: new Date(new Date().setHours(0, 0, 0, 0))
+                }
+            }),
+            Submission.aggregate([
+                { $group: { _id: '$language', count: { $sum: 1 } } },
+                { $sort: { count: -1 } }
+            ]),
+            Submission.aggregate([
+                { $group: { _id: '$status', count: { $sum: 1 } } },
+                { $sort: { count: -1 } }
+            ])
+        ]);
+
+        const successRate = totalSubmissions > 0 ? 
+            ((acceptedSubmissions / totalSubmissions) * 100).toFixed(2) : 0;
+
+        const statistics = {
+            totalSubmissions,
+            acceptedSubmissions,
+            todaySubmissions,
+            successRate: parseFloat(successRate),
+            languageStats,
+            statusStats,
+            activeEvaluations: submissionSemaphore.current || 0,
+            queuedEvaluations: submissionSemaphore.queue?.length || 0
+        };
+
+        res.status(200).json({
+            success: true,
+            data: statistics
+        });
+    } catch (err) {
+        console.error('Get submission statistics error:', err);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to retrieve statistics',
+            details: err.message
+        });
+    }
+});
+
 /* POST submit code for evaluation */
 router.post('/submit', async function(req, res, next) {
     let submission = null;
@@ -583,7 +718,6 @@ router.get('/submission/:id', async function(req, res, next) {
         });
     }
 });
-// Add this route to your existing routes/submissions.js file
 
 /* GET user submissions - Frontend compatible endpoint */
 router.get('/user/:userId', async function(req, res, next) {

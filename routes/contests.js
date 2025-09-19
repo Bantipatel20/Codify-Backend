@@ -15,29 +15,46 @@ router.get('/', async function(req, res, next) {
     // Build filter object
     const filter = { isActive: true };
     
-    if (req.query.status) {
+    // Status filter
+    if (req.query.status && req.query.status !== 'All') {
       filter.status = req.query.status;
     }
     
-    if (req.query.search) {
+    // Search filter
+    if (req.query.search && req.query.search.trim()) {
       filter.$or = [
-        { title: { $regex: req.query.search, $options: 'i' } },
-        { description: { $regex: req.query.search, $options: 'i' } }
+        { title: { $regex: req.query.search.trim(), $options: 'i' } },
+        { description: { $regex: req.query.search.trim(), $options: 'i' } }
       ];
     }
     
+    // Creator filter
     if (req.query.createdBy) {
       filter.createdBy = req.query.createdBy;
     }
     
-    if (req.query.startDate && req.query.endDate) {
-      filter.startDate = {
-        $gte: new Date(req.query.startDate),
-        $lte: new Date(req.query.endDate)
-      };
+    // Date range filter
+    if (req.query.startDate || req.query.endDate) {
+      filter.startDate = {};
+      if (req.query.startDate) {
+        filter.startDate.$gte = new Date(req.query.startDate);
+      }
+      if (req.query.endDate) {
+        filter.startDate.$lte = new Date(req.query.endDate);
+      }
     }
 
-    // Get contests without populating problems first
+    // Department filter
+    if (req.query.department && req.query.department !== 'All') {
+      filter.$or = filter.$or || [];
+      filter.$or.push(
+        { participantSelection: 'manual' },
+        { 'filterCriteria.department': req.query.department }
+      );
+    }
+
+    console.log('Contest filter applied:', JSON.stringify(filter, null, 2));
+
     const [contests, totalCount] = await Promise.all([
       Contest.find(filter)
         .populate('createdBy', 'name email')
@@ -47,32 +64,38 @@ router.get('/', async function(req, res, next) {
       Contest.countDocuments(filter)
     ]);
 
-    // Manually populate existing problems only
-    for (let contest of contests) {
-      const existingProblemIds = contest.problems
-        .filter(p => !p.problemId.startsWith('manual_'))
-        .map(p => p.problemId);
-      
-      if (existingProblemIds.length > 0) {
-        const existingProblems = await Problem.find({ 
-          _id: { $in: existingProblemIds } 
-        }).select('title difficulty');
+    // Enrich contests with problem details
+    const enrichedContests = await Promise.all(
+      contests.map(async (contest) => {
+        const contestObj = contest.toObject();
         
-        // Map existing problems back to contest problems
-        contest.problems.forEach(contestProblem => {
-          if (!contestProblem.problemId.startsWith('manual_')) {
-            const dbProblem = existingProblems.find(p => p._id.toString() === contestProblem.problemId);
-            if (dbProblem) {
-              contestProblem.populatedProblem = dbProblem;
+        // Get existing problem IDs
+        const existingProblemIds = contest.problems
+          .filter(p => !p.problemId.startsWith('manual_'))
+          .map(p => p.problemId);
+        
+        if (existingProblemIds.length > 0) {
+          const existingProblems = await Problem.find({ 
+            _id: { $in: existingProblemIds } 
+          }).select('title difficulty');
+          
+          contestObj.problems.forEach(contestProblem => {
+            if (!contestProblem.problemId.startsWith('manual_')) {
+              const dbProblem = existingProblems.find(p => p._id.toString() === contestProblem.problemId);
+              if (dbProblem) {
+                contestProblem.populatedProblem = dbProblem;
+              }
             }
-          }
-        });
-      }
-    }
+          });
+        }
+        
+        return contestObj;
+      })
+    );
 
     res.status(200).json({
       success: true,
-      data: contests,
+      data: enrichedContests,
       pagination: {
         currentPage: page,
         totalPages: Math.ceil(totalCount / limit),
@@ -91,7 +114,7 @@ router.get('/', async function(req, res, next) {
   }
 });
 
-/* GET contest by ID */
+/* GET contest by ID - Enhanced with full problem details */
 router.get('/:id', async function(req, res, next) {
   try {
     const contestId = req.params.id;
@@ -113,30 +136,49 @@ router.get('/:id', async function(req, res, next) {
       });
     }
 
-    // Manually populate existing problems only
-    const existingProblemIds = contest.problems
-      .filter(p => !p.problemId.startsWith('manual_'))
-      .map(p => p.problemId);
-    
-    if (existingProblemIds.length > 0) {
-      const existingProblems = await Problem.find({ 
-        _id: { $in: existingProblemIds } 
-      }).select('title description difficulty tags');
-      
-      // Map existing problems back to contest problems
-      contest.problems.forEach(contestProblem => {
-        if (!contestProblem.problemId.startsWith('manual_')) {
-          const dbProblem = existingProblems.find(p => p._id.toString() === contestProblem.problemId);
-          if (dbProblem) {
-            contestProblem.populatedProblem = dbProblem;
+    // Enhanced problem enrichment with full details
+    const enrichedProblems = await Promise.all(
+      contest.problems.map(async (contestProblem) => {
+        const enrichedProblem = { ...contestProblem.toObject() };
+        
+        if (contestProblem.problemId.startsWith('manual_')) {
+          // For manual problems, all data is already in manualProblem
+          enrichedProblem.description = contestProblem.manualProblem?.description || '';
+          enrichedProblem.inputFormat = contestProblem.manualProblem?.inputFormat || '';
+          enrichedProblem.outputFormat = contestProblem.manualProblem?.outputFormat || '';
+          enrichedProblem.constraints = contestProblem.manualProblem?.constraints || '';
+          enrichedProblem.sampleInput = contestProblem.manualProblem?.sampleInput || '';
+          enrichedProblem.sampleOutput = contestProblem.manualProblem?.sampleOutput || '';
+          enrichedProblem.explanation = contestProblem.manualProblem?.explanation || '';
+          enrichedProblem.testCases = contestProblem.manualProblem?.testCases || [];
+          enrichedProblem.isManual = true;
+        } else {
+          // For database problems, fetch from Problem collection
+          try {
+            const dbProblem = await Problem.findById(contestProblem.problemId);
+            if (dbProblem) {
+              enrichedProblem.description = dbProblem.description;
+              enrichedProblem.testCases = dbProblem.testCases;
+              enrichedProblem.tags = dbProblem.tags;
+              enrichedProblem.populatedProblem = dbProblem;
+              enrichedProblem.isManual = false;
+            }
+          } catch (err) {
+            console.error('Error fetching problem:', contestProblem.problemId, err);
           }
         }
-      });
-    }
+        
+        return enrichedProblem;
+      })
+    );
+
+    // Replace problems with enriched version
+    const contestResponse = contest.toObject();
+    contestResponse.problems = enrichedProblems;
 
     res.status(200).json({
       success: true,
-      data: contest
+      data: contestResponse
     });
   } catch (err) {
     console.error('Get contest error:', err);
@@ -567,6 +609,114 @@ router.post('/:id/register', async function(req, res, next) {
     res.status(400).json({
       success: false,
       error: err.message
+    });
+  }
+});
+
+/* POST register multiple students manually to contest */
+router.post('/:id/register-manual', async function(req, res, next) {
+  try {
+    const contestId = req.params.id;
+    const { studentIds } = req.body; // Array of student IDs
+    
+    if (!contestId.match(/^[0-9a-fA-F]{24}$/)) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid contest ID format' 
+      });
+    }
+
+    if (!Array.isArray(studentIds) || studentIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Student IDs array is required'
+      });
+    }
+
+    const contest = await Contest.findById(contestId);
+    if (!contest) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Contest not found' 
+      });
+    }
+
+    // Get all users
+    const users = await User.find({ _id: { $in: studentIds } });
+    if (users.length !== studentIds.length) {
+      return res.status(400).json({
+        success: false,
+        error: 'One or more users not found'
+      });
+    }
+
+    let registeredCount = 0;
+    const errors = [];
+
+    for (const user of users) {
+      try {
+        // Check if already registered
+        const isAlreadyRegistered = contest.participants.some(p => 
+          p.userId.toString() === user._id.toString()
+        );
+
+        if (!isAlreadyRegistered) {
+          await contest.addParticipant(user);
+          registeredCount++;
+        }
+      } catch (error) {
+        errors.push(`${user.name}: ${error.message}`);
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Successfully registered ${registeredCount} students`,
+      registeredCount,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (err) {
+    console.error('Manual register participants error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to register participants',
+      details: err.message
+    });
+  }
+});
+
+/* GET available students for manual registration */
+router.get('/:id/available-students', async function(req, res, next) {
+  try {
+    const contestId = req.params.id;
+    
+    const contest = await Contest.findById(contestId);
+    if (!contest) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Contest not found' 
+      });
+    }
+
+    // Get all students
+    const allStudents = await User.find({}).select('name email username student_id department batch div');
+    
+    // Filter out already registered students
+    const registeredUserIds = contest.participants.map(p => p.userId.toString());
+    const availableStudents = allStudents.filter(student => 
+      !registeredUserIds.includes(student._id.toString())
+    );
+
+    res.status(200).json({
+      success: true,
+      data: availableStudents
+    });
+  } catch (err) {
+    console.error('Get available students error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get available students',
+      details: err.message
     });
   }
 });

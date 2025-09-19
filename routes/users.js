@@ -127,21 +127,28 @@ router.delete('/user/:id', async function(req, res, next) {
 router.post('/user', async function(req, res, next) {
   try {
     // Validate required fields
-    const { name, email, password } = req.body;
+    const { name, email, password, username, student_id, department, batch, div } = req.body;
     
-    if (!name || !email || !password) {
+    if (!name || !email || !password || !username || !student_id || !department || !batch || !div) {
       return res.status(400).json({
         success: false,
-        error: 'Name, email, and password are required'
+        error: 'Name, email, password, username, student_id, department, batch, and division are required'
       });
     }
 
     // Check if user already exists
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
+    const existingUser = await User.findOne({ 
+      $or: [
+        { email: email.toLowerCase() },
+        { username: username },
+        { student_id: student_id }
+      ]
+    });
+    
     if (existingUser) {
       return res.status(409).json({
         success: false,
-        error: 'User with this email already exists'
+        error: 'User with this email, username, or student ID already exists'
       });
     }
 
@@ -170,7 +177,7 @@ router.post('/user', async function(req, res, next) {
     if (err.code === 11000) {
       return res.status(409).json({
         success: false,
-        error: 'User with this email already exists'
+        error: 'User with this email, username, or student ID already exists'
       });
     }
     
@@ -193,7 +200,6 @@ router.post('/user', async function(req, res, next) {
 });
 
 /* PUT update user by ID - Enhanced with validation */
-// Update your existing PUT route in routes/users.js
 router.put('/user/:id', async function(req, res, next) {
   try {
     const userId = req.params.id;
@@ -239,6 +245,21 @@ router.put('/user/:id', async function(req, res, next) {
       }
     }
 
+    // If student_id is being updated, check for duplicates
+    if (updateData.student_id) {
+      const existingUser = await User.findOne({ 
+        student_id: updateData.student_id,
+        _id: { $ne: userId }
+      });
+      
+      if (existingUser) {
+        return res.status(409).json({
+          success: false,
+          error: 'Student ID already exists'
+        });
+      }
+    }
+
     const updatedUser = await User.findByIdAndUpdate(
       userId,
       updateData,
@@ -268,7 +289,7 @@ router.put('/user/:id', async function(req, res, next) {
     if (err.code === 11000) {
       return res.status(409).json({
         success: false,
-        error: 'Username or email already exists'
+        error: 'Username, email, or student ID already exists'
       });
     }
     
@@ -289,7 +310,6 @@ router.put('/user/:id', async function(req, res, next) {
     });
   }
 });
-// In your existing routes/users.js file, add this login route:
 
 /* POST login - Direct database authentication */
 router.post('/login', async function(req, res, next) {
@@ -346,5 +366,56 @@ router.post('/login', async function(req, res, next) {
   }
 });
 
+/* GET dropdown data endpoints */
+router.get('/meta/departments', async function(req, res, next) {
+  try {
+    const departments = await User.distinct('department');
+    res.status(200).json({
+      success: true,
+      data: departments.filter(dept => dept && dept.trim() !== '').sort()
+    });
+  } catch (err) {
+    console.error('Get departments error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve departments',
+      details: err.message
+    });
+  }
+});
+
+router.get('/meta/batches', async function(req, res, next) {
+  try {
+    const batches = await User.distinct('batch');
+    res.status(200).json({
+      success: true,
+      data: batches.filter(batch => batch && batch.trim() !== '').sort()
+    });
+  } catch (err) {
+    console.error('Get batches error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve batches',
+      details: err.message
+    });
+  }
+});
+
+router.get('/meta/divisions', async function(req, res, next) {
+  try {
+    const divisions = await User.distinct('div');
+    res.status(200).json({
+      success: true,
+      data: divisions.filter(div => div && div.trim() !== '').sort()
+    });
+  } catch (err) {
+    console.error('Get divisions error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve divisions',
+      details: err.message
+    });
+  }
+});
 
 module.exports = router;

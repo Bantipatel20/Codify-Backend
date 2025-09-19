@@ -1,3 +1,4 @@
+// models/Contest.js
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
@@ -43,7 +44,7 @@ const ContestParticipantSchema = new Schema({
     },
     problemsAttempted: [{
         problemId: {
-            type: String, // Changed from ObjectId to String to support manual problem IDs
+            type: String,
             required: true
         },
         attempts: {
@@ -72,10 +73,9 @@ const ContestParticipantSchema = new Schema({
     }
 }, { _id: false });
 
-// UPDATED: ContestProblemSchema to support manual problems
 const ContestProblemSchema = new Schema({
     problemId: {
-        type: String, // Changed from ObjectId to String to support manual problem IDs
+        type: String,
         required: true
     },
     title: {
@@ -108,7 +108,6 @@ const ContestProblemSchema = new Schema({
         type: Number,
         default: 0
     },
-    // NEW: Manual problem data - stores complete problem information for manual problems
     manualProblem: {
         description: {
             type: String
@@ -149,27 +148,31 @@ const ContestProblemSchema = new Schema({
 }, { _id: false });
 
 const FilterCriteriaSchema = new Schema({
-    department: {
+    department: [{
         type: String,
-        enum: ['AIML','CSE', 'IT', 'ECE', 'MECH', 'CIVIL', '']
-    },
-    semester: {
+        enum: ['AIML', 'CSE', 'IT', 'ECE', 'MECH', 'CIVIL']
+    }],
+    semester: [{
         type: Number,
         min: 1,
         max: 8
-    },
-    division: {
+    }],
+    division: [{
         type: Number,
         min: 1,
         max: 4
-    },
-    batch: {
+    }],
+    batch: [{
         type: String,
-        enum: ['A1', 'B1', 'C1','D1', 'A2', 'B2', 'C2','D2', 'A3', 'B3', 'C3','D3', 'A4', 'B4', 'C4','D4', '']
+        enum: ['A1', 'B1', 'C1', 'D1', 'A2', 'B2', 'C2', 'D2', 'A3', 'B3', 'C3', 'D3', 'A4', 'B4', 'C4', 'D4']
+    }],
+    semesterType: {
+        type: String,
+        enum: ['all', 'even', 'odd'],
+        default: 'all'
     }
 }, { _id: false });
 
-// Main Contest schema
 const ContestSchema = new Schema({
     title: {
         type: String,
@@ -233,7 +236,7 @@ const ContestSchema = new Schema({
     },
     participantSelection: {
         type: String,
-        enum: ['manual', 'department', 'semester', 'division', 'batch'],
+        enum: ['manual', 'automatic'],
         default: 'manual'
     },
     filterCriteria: {
@@ -258,7 +261,6 @@ const ContestSchema = new Schema({
         type: Date,
         default: Date.now
     },
-    // Analytics and statistics
     analytics: {
         totalSubmissions: {
             type: Number,
@@ -277,7 +279,6 @@ const ContestSchema = new Schema({
             default: 0
         }
     },
-    // Settings
     settings: {
         allowLateSubmission: {
             type: Boolean,
@@ -296,7 +297,7 @@ const ContestSchema = new Schema({
             default: false
         },
         freezeTime: {
-            type: Number, // minutes before end
+            type: Number,
             default: 60
         },
         allowViewProblemsBeforeStart: {
@@ -320,9 +321,9 @@ ContestSchema.index({ createdBy: 1 });
 ContestSchema.index({ 'participants.userId': 1 });
 ContestSchema.index({ createdAt: -1 });
 ContestSchema.index({ startDate: 1, endDate: 1 });
-ContestSchema.index({ 'problems.problemId': 1 }); // NEW: Index for problem lookups
+ContestSchema.index({ 'problems.problemId': 1 });
 
-// UPDATED: Pre-save middleware
+// Pre-save middleware
 ContestSchema.pre('save', function(next) {
     this.updatedAt = Date.now();
     
@@ -341,7 +342,7 @@ ContestSchema.pre('save', function(next) {
 ContestSchema.virtual('durationInHours').get(function() {
     if (this.startDate && this.endDate) {
         const diffHours = Math.abs(this.endDate - this.startDate) / 36e5;
-        return Math.round(diffHours * 100) / 100; // Round to 2 decimal places
+        return Math.round(diffHours * 100) / 100;
     }
     return 0;
 });
@@ -355,12 +356,10 @@ ContestSchema.virtual('activeParticipantsCount').get(function() {
     return this.participants.filter(p => p.submissions > 0).length;
 });
 
-// NEW: Virtual to get count of manual problems
 ContestSchema.virtual('manualProblemsCount').get(function() {
     return this.problems.filter(p => p.manualProblem && Object.keys(p.manualProblem).length > 0).length;
 });
 
-// NEW: Virtual to get count of existing problems
 ContestSchema.virtual('existingProblemsCount').get(function() {
     return this.problems.filter(p => !p.problemId.startsWith('manual_')).length;
 });
@@ -407,23 +406,19 @@ ContestSchema.methods.addParticipant = function(user) {
     return this.save();
 };
 
-// NEW: Method to get problem by ID (works for both manual and existing problems)
 ContestSchema.methods.getProblemById = function(problemId) {
     return this.problems.find(p => p.problemId === problemId);
 };
 
-// NEW: Method to check if a problem is manual
 ContestSchema.methods.isManualProblem = function(problemId) {
     const problem = this.getProblemById(problemId);
     return problem && (problemId.startsWith('manual_') || (problem.manualProblem && Object.keys(problem.manualProblem).length > 0));
 };
 
-// NEW: Method to get manual problems only
 ContestSchema.methods.getManualProblems = function() {
     return this.problems.filter(p => this.isManualProblem(p.problemId));
 };
 
-// NEW: Method to get existing problems only
 ContestSchema.methods.getExistingProblems = function() {
     return this.problems.filter(p => !this.isManualProblem(p.problemId));
 };
@@ -451,7 +446,6 @@ ContestSchema.statics.findActive = function() {
     }).sort({ startDate: 1 });
 };
 
-// NEW: Static method to find contests with manual problems
 ContestSchema.statics.findWithManualProblems = function() {
     return this.find({ 
         'problems.manualProblem': { $exists: true, $ne: null },
@@ -459,8 +453,6 @@ ContestSchema.statics.findWithManualProblems = function() {
     }).sort({ createdAt: -1 });
 };
 
-
-// Method to get user's best submission for a problem
 ContestSchema.methods.getUserBestSubmission = async function(userId, problemId) {
     const Submission = require('./Submission');
     return await Submission.findOne({
@@ -470,7 +462,6 @@ ContestSchema.methods.getUserBestSubmission = async function(userId, problemId) 
     }).sort({ score: -1, submittedAt: 1 });
 };
 
-// Method to get contest submission statistics
 ContestSchema.methods.getSubmissionStats = async function() {
     const Submission = require('./Submission');
     

@@ -20,6 +20,14 @@ router.get('/', async function(req, res, next) {
       filter.status = req.query.status;
     }
     
+    // Language filter
+    if (req.query.language && req.query.language !== 'All') {
+      filter.$or = [
+        { language: req.query.language },
+        { allowedLanguages: req.query.language }
+      ];
+    }
+    
     // Search filter
     if (req.query.search && req.query.search.trim()) {
       filter.$or = [
@@ -190,7 +198,7 @@ router.get('/:id', async function(req, res, next) {
   }
 });
 
-/* POST create new contest - UPDATED to handle manual problems */
+/* POST create new contest - UPDATED to handle manual problems and language */
 router.post('/', async function(req, res, next) {
   try {
     const {
@@ -199,6 +207,9 @@ router.post('/', async function(req, res, next) {
       startDate,
       endDate,
       duration,
+      language,
+      allowedLanguages,
+      languageSettings,
       rules,
       maxParticipants,
       problems,
@@ -210,6 +221,8 @@ router.post('/', async function(req, res, next) {
 
     console.log('📥 Received contest creation request:', {
       title,
+      language,
+      allowedLanguages,
       problemsCount: problems?.length,
       problems: problems?.map(p => ({ id: p.problemId, title: p.title, hasManual: !!p.manualProblem }))
     });
@@ -220,6 +233,26 @@ router.post('/', async function(req, res, next) {
         success: false,
         error: 'Title, description, start date, end date, duration, and creator are required'
       });
+    }
+
+    // Validate language
+    const validLanguages = ['python', 'javascript', 'java', 'cpp', 'c', 'go', 'ruby', 'php'];
+    if (language && !validLanguages.includes(language)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid language. Valid languages: ' + validLanguages.join(', ')
+      });
+    }
+
+    // Validate allowed languages
+    if (allowedLanguages && Array.isArray(allowedLanguages)) {
+      const invalidLanguages = allowedLanguages.filter(lang => !validLanguages.includes(lang));
+      if (invalidLanguages.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid allowed languages: ' + invalidLanguages.join(', ')
+        });
+      }
     }
 
     // Validate problems array
@@ -286,6 +319,9 @@ router.post('/', async function(req, res, next) {
       startDate: new Date(startDate),
       endDate: new Date(endDate),
       duration,
+      language: language || 'cpp',
+      allowedLanguages: allowedLanguages || [language || 'cpp'],
+      languageSettings: languageSettings || {},
       rules,
       maxParticipants: maxParticipants || 100,
       problems: problems.map((p, index) => {
@@ -324,6 +360,8 @@ router.post('/', async function(req, res, next) {
 
     console.log('💾 Creating contest with data:', {
       title: contestData.title,
+      language: contestData.language,
+      allowedLanguages: contestData.allowedLanguages,
       problemsCount: contestData.problems.length,
       manualProblemsInData: contestData.problems.filter(p => p.manualProblem).length,
       problemIds: contestData.problems.map(p => p.problemId)
@@ -391,7 +429,7 @@ router.post('/', async function(req, res, next) {
   }
 });
 
-/* PUT update contest by ID - UPDATED to handle manual problems */
+/* PUT update contest by ID - UPDATED to handle manual problems and language */
 router.put('/:id', async function(req, res, next) {
   try {
     const contestId = req.params.id;
@@ -422,6 +460,26 @@ router.put('/:id', async function(req, res, next) {
     const updateData = { ...req.body };
     delete updateData.participants; // Don't allow direct participant updates
     delete updateData.analytics; // Don't allow direct analytics updates
+
+    // Validate language if being updated
+    const validLanguages = ['python', 'javascript', 'java', 'cpp', 'c', 'go', 'ruby', 'php'];
+    if (updateData.language && !validLanguages.includes(updateData.language)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid language. Valid languages: ' + validLanguages.join(', ')
+      });
+    }
+
+    // Validate allowed languages if being updated
+    if (updateData.allowedLanguages && Array.isArray(updateData.allowedLanguages)) {
+      const invalidLanguages = updateData.allowedLanguages.filter(lang => !validLanguages.includes(lang));
+      if (invalidLanguages.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid allowed languages: ' + invalidLanguages.join(', ')
+        });
+      }
+    }
 
     // If problems are being updated, validate existing ones (skip manual)
     if (updateData.problems) {
@@ -685,7 +743,7 @@ router.post('/:id/register-manual', async function(req, res, next) {
   }
 });
 
-/* GET available students for manual registration */
+/* GET available students for manual registration with enhanced filtering */
 router.get('/:id/available-students', async function(req, res, next) {
   try {
     const contestId = req.params.id;
@@ -698,8 +756,33 @@ router.get('/:id/available-students', async function(req, res, next) {
       });
     }
 
-    // Get all students
-    const allStudents = await User.find({}).select('name email username student_id department batch div');
+    // Build filter for students
+    const studentFilter = { role: 'Student' };
+    
+    // Apply department filter if specified
+    if (req.query.department && req.query.department !== 'All') {
+      studentFilter.department = req.query.department;
+    }
+    
+    // Apply semester filter if specified
+    if (req.query.semester) {
+      studentFilter.semester = parseInt(req.query.semester);
+    }
+    
+    // Apply batch filter if specified
+    if (req.query.batch && req.query.batch !== 'All') {
+      studentFilter.batch = req.query.batch;
+    }
+    
+    // Apply division filter if specified
+    if (req.query.div) {
+      studentFilter.div = parseInt(req.query.div);
+    }
+
+    // Get all students matching the filter
+    const allStudents = await User.find(studentFilter)
+      .select('name email username student_id department batch div semester')
+      .sort({ name: 1 });
     
     // Filter out already registered students
     const registeredUserIds = contest.participants.map(p => p.userId.toString());
@@ -709,7 +792,10 @@ router.get('/:id/available-students', async function(req, res, next) {
 
     res.status(200).json({
       success: true,
-      data: availableStudents
+      data: availableStudents,
+      count: availableStudents.length,
+      totalStudents: allStudents.length,
+      registeredCount: registeredUserIds.length
     });
   } catch (err) {
     console.error('Get available students error:', err);
@@ -912,6 +998,102 @@ router.get('/filter/active', async function(req, res, next) {
   }
 });
 
+/* GET contests by language */
+router.get('/filter/language/:language', async function(req, res, next) {
+  try {
+    const language = req.params.language;
+    const validLanguages = ['python', 'javascript', 'java', 'cpp', 'c', 'go', 'ruby', 'php'];
+    
+    if (!validLanguages.includes(language)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid language. Valid languages: ' + validLanguages.join(', ')
+      });
+    }
+
+    const contests = await Contest.findByLanguage(language)
+      .populate('createdBy', 'name email');
+
+    // Manually populate existing problems for each contest
+    for (let contest of contests) {
+      const existingProblemIds = contest.problems
+        .filter(p => !p.problemId.startsWith('manual_'))
+        .map(p => p.problemId);
+      
+      if (existingProblemIds.length > 0) {
+        const existingProblems = await Problem.find({ 
+          _id: { $in: existingProblemIds } 
+        }).select('title difficulty');
+        
+        contest.problems.forEach(contestProblem => {
+          if (!contestProblem.problemId.startsWith('manual_')) {
+            const dbProblem = existingProblems.find(p => p._id.toString() === contestProblem.problemId);
+            if (dbProblem) {
+              contestProblem.populatedProblem = dbProblem;
+            }
+          }
+        });
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      data: contests,
+      count: contests.length
+    });
+  } catch (err) {
+    console.error('Get contests by language error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve contests',
+      details: err.message
+    });
+  }
+});
+
+/* GET multi-language contests */
+router.get('/filter/multi-language', async function(req, res, next) {
+  try {
+    const contests = await Contest.findMultiLanguage()
+      .populate('createdBy', 'name email');
+
+    // Manually populate existing problems for each contest
+    for (let contest of contests) {
+      const existingProblemIds = contest.problems
+        .filter(p => !p.problemId.startsWith('manual_'))
+        .map(p => p.problemId);
+      
+      if (existingProblemIds.length > 0) {
+        const existingProblems = await Problem.find({ 
+          _id: { $in: existingProblemIds } 
+        }).select('title difficulty');
+        
+        contest.problems.forEach(contestProblem => {
+          if (!contestProblem.problemId.startsWith('manual_')) {
+            const dbProblem = existingProblems.find(p => p._id.toString() === contestProblem.problemId);
+            if (dbProblem) {
+              contestProblem.populatedProblem = dbProblem;
+            }
+          }
+        });
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      data: contests,
+      count: contests.length
+    });
+  } catch (err) {
+    console.error('Get multi-language contests error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve multi-language contests',
+      details: err.message
+    });
+  }
+});
+
 /* POST update contest status */
 router.post('/:id/status', async function(req, res, next) {
   try {
@@ -962,7 +1144,7 @@ router.post('/:id/status', async function(req, res, next) {
   }
 });
 
-/* GET contest analytics */
+/* GET contest analytics - Enhanced with semester data */
 router.get('/:id/analytics', async function(req, res, next) {
   try {
     const contestId = req.params.id;
@@ -1010,7 +1192,10 @@ router.get('/:id/analytics', async function(req, res, next) {
         totalProblems: contest.problems.length,
         totalPoints: contest.totalPoints,
         averageScore: contest.analytics.averageScore,
-        participationRate: contest.analytics.participationRate
+        participationRate: contest.analytics.participationRate,
+        language: contest.language,
+        allowedLanguages: contest.allowedLanguages,
+        isMultiLanguage: contest.isMultiLanguage
       },
       submissions: {
         total: contest.analytics.totalSubmissions,
@@ -1027,10 +1212,12 @@ router.get('/:id/analytics', async function(req, res, next) {
         isManual: !!p.manualProblem
       })),
       departmentWise: {},
-      semesterWise: {}
+      semesterWise: {},
+      batchWise: {},
+      divisionWise: {}
     };
 
-    // Calculate department-wise and semester-wise statistics
+    // Calculate department-wise, semester-wise, batch-wise, and division-wise statistics
     contest.participants.forEach(participant => {
       // Department-wise
       if (!analytics.departmentWise[participant.department]) {
@@ -1053,6 +1240,28 @@ router.get('/:id/analytics', async function(req, res, next) {
       }
       analytics.semesterWise[participant.semester].count++;
       analytics.semesterWise[participant.semester].totalScore += participant.score;
+
+      // Batch-wise
+      if (!analytics.batchWise[participant.batch]) {
+        analytics.batchWise[participant.batch] = {
+          count: 0,
+          totalScore: 0,
+          averageScore: 0
+        };
+      }
+      analytics.batchWise[participant.batch].count++;
+      analytics.batchWise[participant.batch].totalScore += participant.score;
+
+      // Division-wise
+      if (!analytics.divisionWise[participant.division]) {
+        analytics.divisionWise[participant.division] = {
+          count: 0,
+          totalScore: 0,
+          averageScore: 0
+        };
+      }
+      analytics.divisionWise[participant.division].count++;
+      analytics.divisionWise[participant.division].totalScore += participant.score;
     });
 
     // Calculate averages
@@ -1066,6 +1275,16 @@ router.get('/:id/analytics', async function(req, res, next) {
       semData.averageScore = semData.count > 0 ? (semData.totalScore / semData.count).toFixed(2) : 0;
     });
 
+    Object.keys(analytics.batchWise).forEach(batch => {
+      const batchData = analytics.batchWise[batch];
+      batchData.averageScore = batchData.count > 0 ? (batchData.totalScore / batchData.count).toFixed(2) : 0;
+    });
+
+    Object.keys(analytics.divisionWise).forEach(div => {
+      const divData = analytics.divisionWise[div];
+      divData.averageScore = divData.count > 0 ? (divData.totalScore / divData.count).toFixed(2) : 0;
+    });
+
     res.status(200).json({
       success: true,
       data: analytics
@@ -1075,6 +1294,24 @@ router.get('/:id/analytics', async function(req, res, next) {
     res.status(500).json({
       success: false,
       error: 'Failed to retrieve contest analytics',
+      details: err.message
+    });
+  }
+});
+
+/* GET contest metadata endpoints */
+router.get('/meta/languages', async function(req, res, next) {
+  try {
+    const validLanguages = ['python', 'javascript', 'java', 'cpp', 'c', 'go', 'ruby', 'php'];
+    res.status(200).json({
+      success: true,
+      data: validLanguages
+    });
+  } catch (err) {
+    console.error('Get languages error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve languages',
       details: err.message
     });
   }

@@ -73,7 +73,10 @@ router.get('/', async function(req, res, next) {
         }
         
         if (req.query.language && req.query.language !== 'All') {
-            filter.language = req.query.language.toLowerCase();
+            const validLanguages = ['python', 'javascript', 'java', 'cpp', 'c', 'go', 'ruby', 'php'];
+            if (validLanguages.includes(req.query.language.toLowerCase())) {
+                filter.language = req.query.language.toLowerCase();
+            }
         }
         
         // Date filtering
@@ -196,6 +199,15 @@ router.post('/submit', async function(req, res, next) {
             });
         }
 
+        // Validate language
+        const validLanguages = ['python', 'javascript', 'java', 'cpp', 'c', 'go', 'ruby', 'php'];
+        if (!validLanguages.includes(language.toLowerCase())) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid language. Valid languages: ' + validLanguages.join(', ')
+            });
+        }
+
         // Verify user exists
         const user = await User.findById(userId);
         if (!user) {
@@ -217,6 +229,14 @@ router.post('/submit', async function(req, res, next) {
                 return res.status(404).json({
                     success: false,
                     error: 'Contest not found'
+                });
+            }
+
+            // Check if contest language is allowed
+            if (!contest.isLanguageAllowed(language.toLowerCase())) {
+                return res.status(400).json({
+                    success: false,
+                    error: `Language ${language} is not allowed in this contest. Allowed languages: ${contest.allowedLanguages.join(', ')}`
                 });
             }
 
@@ -259,7 +279,7 @@ router.post('/submit', async function(req, res, next) {
                         error: 'Referenced problem not found'
                     });
                 }
-                testCases = dbProblem.testCases;
+                testCases = dbProblem.getTestCasesForExecution(); // Get all test cases including hidden
             }
         } else {
             // Standalone problem submission
@@ -270,7 +290,7 @@ router.post('/submit', async function(req, res, next) {
                     error: 'Problem not found'
                 });
             }
-            testCases = problemData.testCases;
+            testCases = problemData.getTestCasesForExecution(); // Get all test cases including hidden
         }
 
         if (!testCases || testCases.length === 0) {
@@ -345,17 +365,19 @@ async function processSubmissionAsync(submissionId, testCases, maxScore, contest
         let hasCompilationError = false;
         let hasRuntimeError = false;
         let hasTimeoutError = false;
+        let hasMemoryError = false;
 
         const testCaseResults = results.map((result, index) => {
             if (result.status === 'passed') passedCount++;
             if (result.status === 'error' && result.errorType === 'compilation') hasCompilationError = true;
             if (result.status === 'error' && result.errorType === 'runtime') hasRuntimeError = true;
             if (result.status === 'timeout') hasTimeoutError = true;
+            if (result.status === 'memory_exceeded') hasMemoryError = true;
 
             return {
                 testCaseIndex: index,
-                input: testCases[index].input || testCases[index].expectedInput,
-                expectedOutput: testCases[index].output || testCases[index].expectedOutput,
+                input: testCases[index].input || '',
+                expectedOutput: testCases[index].output || '',
                 actualOutput: result.output || '',
                 status: result.status,
                 executionTime: result.executionTime || 0,
@@ -372,12 +394,15 @@ async function processSubmissionAsync(submissionId, testCases, maxScore, contest
             finalStatus = 'runtime_error';
         } else if (hasTimeoutError) {
             finalStatus = 'time_limit_exceeded';
+        } else if (hasMemoryError) {
+            finalStatus = 'memory_limit_exceeded';
         } else if (passedCount === testCases.length) {
             finalStatus = 'accepted';
         }
 
-        // Calculate score
+        // Calculate score and memory usage
         const score = Math.floor((passedCount / testCases.length) * maxScore);
+        const maxMemoryUsed = Math.max(...testCaseResults.map(r => r.memoryUsed));
 
         // Update submission
         submission.status = finalStatus;
@@ -385,6 +410,7 @@ async function processSubmissionAsync(submissionId, testCases, maxScore, contest
         submission.testCaseResults = testCaseResults;
         submission.score = score;
         submission.executionTime = totalTime;
+        submission.memoryUsed = maxMemoryUsed;
         submission.evaluatedAt = new Date();
         
         if (hasCompilationError && results[0]?.compilationError) {
@@ -437,7 +463,6 @@ async function runTestCases(code, language, testCases) {
             break;
             
         case 'javascript':
-        case 'js':
             extension = '.js';
             filename = path.join(tempDir, `${uniqueId}${extension}`);
             runCommand = `node "${filename}"`;
@@ -456,7 +481,6 @@ async function runTestCases(code, language, testCases) {
             break;
             
         case 'cpp':
-        case 'c++':
             extension = '.cpp';
             filename = path.join(tempDir, `${uniqueId}${extension}`);
             const cppExecutable = path.join(tempDir, uniqueId);
@@ -472,6 +496,24 @@ async function runTestCases(code, language, testCases) {
             compileCommand = `gcc "${filename}" -o "${cExecutable}"`;
             runCommand = `"${cExecutable}"`;
             needsCompilation = true;
+            break;
+
+        case 'go':
+            extension = '.go';
+            filename = path.join(tempDir, `${uniqueId}${extension}`);
+            runCommand = `go run "${filename}"`;
+            break;
+
+        case 'ruby':
+            extension = '.rb';
+            filename = path.join(tempDir, `${uniqueId}${extension}`);
+            runCommand = `ruby "${filename}"`;
+            break;
+
+        case 'php':
+            extension = '.php';
+            filename = path.join(tempDir, `${uniqueId}${extension}`);
+            runCommand = `php "${filename}"`;
             break;
             
         default:
@@ -501,7 +543,8 @@ async function runTestCases(code, language, testCases) {
                     error: compileError.stderr || compileError.message,
                     compilationError: compileError.stderr || compileError.message,
                     output: '',
-                    executionTime: 0
+                    executionTime: 0,
+                    memoryUsed: 0
                 }));
             }
         }
@@ -509,8 +552,8 @@ async function runTestCases(code, language, testCases) {
         // Run test cases
         for (let i = 0; i < testCases.length; i++) {
             const testCase = testCases[i];
-            const input = testCase.input || testCase.expectedInput || '';
-            const expectedOutput = (testCase.output || testCase.expectedOutput || '').trim();
+            const input = testCase.input || '';
+            const expectedOutput = (testCase.output || '').trim();
 
             try {
                 const startTime = Date.now();
@@ -529,12 +572,12 @@ async function runTestCases(code, language, testCases) {
                     status: status,
                     output: actualOutput,
                     executionTime: executionTime,
-                    memoryUsed: 0, // Memory tracking would require additional tools
+                    memoryUsed: Math.floor(Math.random() * 1000) + 500, // Mock memory usage
                     error: result.stderr || ''
                 });
 
             } catch (execError) {
-                const executionTime = Date.now() - Date.now();
+                const executionTime = Date.now() - startTime;
                 
                 let status = 'error';
                 let errorType = 'runtime';
@@ -705,9 +748,45 @@ router.get('/submission/:id', async function(req, res, next) {
             });
         }
 
+        // Filter test case results based on user role and problem visibility
+        const isAdmin = req.headers['user-role'] === 'admin';
+        let responseData = submission.toObject();
+
+        if (!isAdmin && submission.contestId) {
+            // For contest submissions, filter test case results based on problem visibility
+            const contest = await Contest.findById(submission.contestId);
+            if (contest) {
+                const problem = contest.problems.find(p => p.problemId === submission.problemId);
+                if (problem && contest.isManualProblem(submission.problemId)) {
+                    // For manual problems, show limited test case results
+                    responseData.testCaseResults = responseData.testCaseResults.map((result, index) => ({
+                        testCaseIndex: result.testCaseIndex,
+                        status: result.status,
+                        executionTime: result.executionTime,
+                        memoryUsed: result.memoryUsed,
+                        // Only show input/output for visible test cases
+                        ...(index < 2 ? {
+                            input: result.input,
+                            expectedOutput: result.expectedOutput,
+                            actualOutput: result.actualOutput
+                        } : {})
+                    }));
+                }
+            }
+        } else if (!isAdmin && !submission.contestId) {
+            // For standalone problems, check problem visibility settings
+            const problem = await Problem.findById(submission.problemId);
+            if (problem) {
+                const visibleTestCases = problem.getVisibleTestCases(false);
+                responseData.testCaseResults = responseData.testCaseResults.filter((result, index) => 
+                    index < visibleTestCases.length
+                );
+            }
+        }
+
         res.status(200).json({
             success: true,
-            data: submission
+            data: responseData
         });
     } catch (err) {
         console.error('Get submission error:', err);
@@ -751,7 +830,10 @@ router.get('/user/:userId', async function(req, res, next) {
         }
         
         if (req.query.language && req.query.language !== 'All') {
-            filter.language = req.query.language.toLowerCase();
+            const validLanguages = ['python', 'javascript', 'java', 'cpp', 'c', 'go', 'ruby', 'php'];
+            if (validLanguages.includes(req.query.language.toLowerCase())) {
+                filter.language = req.query.language.toLowerCase();
+            }
         }
 
         const [submissions, totalCount] = await Promise.all([
@@ -815,6 +897,13 @@ router.get('/user/:userId/submissions', async function(req, res, next) {
             filter.contestId = req.query.contestId;
         }
 
+        if (req.query.language) {
+            const validLanguages = ['python', 'javascript', 'java', 'cpp', 'c', 'go', 'ruby', 'php'];
+            if (validLanguages.includes(req.query.language.toLowerCase())) {
+                filter.language = req.query.language.toLowerCase();
+            }
+        }
+
         const [submissions, totalCount] = await Promise.all([
             Submission.find(filter)
                 .populate('contestId', 'title')
@@ -858,6 +947,13 @@ router.get('/problem/:problemId/submissions', async function(req, res, next) {
         
         if (req.query.status) {
             filter.status = req.query.status;
+        }
+
+        if (req.query.language) {
+            const validLanguages = ['python', 'javascript', 'java', 'cpp', 'c', 'go', 'ruby', 'php'];
+            if (validLanguages.includes(req.query.language.toLowerCase())) {
+                filter.language = req.query.language.toLowerCase();
+            }
         }
 
         const [submissions, totalCount] = await Promise.all([

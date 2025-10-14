@@ -2,7 +2,6 @@ var express = require('express');
 var router = express.Router();
 const User = require('../models/Users');
 
-
 /* GET all users - Enhanced with pagination and filtering */
 router.get('/users', async function(req, res, next) {
   try {
@@ -17,6 +16,21 @@ router.get('/users', async function(req, res, next) {
     }
     if (req.query.email) {
       filter.email = { $regex: req.query.email, $options: 'i' };
+    }
+    if (req.query.department) {
+      filter.department = req.query.department;
+    }
+    if (req.query.semester) {
+      filter.semester = parseInt(req.query.semester);
+    }
+    if (req.query.role) {
+      filter.role = req.query.role;
+    }
+    if (req.query.batch) {
+      filter.batch = req.query.batch;
+    }
+    if (req.query.div) {
+      filter.div = req.query.div;
     }
 
     // Execute queries concurrently
@@ -124,80 +138,106 @@ router.delete('/user/:id', async function(req, res, next) {
 });
 
 /* POST a new user - Enhanced with validation */
-router.post('/user', async function(req, res, next) {
+router.post('/user', async function (req, res, next) {
   try {
-    // Validate required fields
-    const { name, email, password, username, student_id, department, batch, div } = req.body;
-    
-    if (!name || !email || !password || !username || !student_id || !department || !batch || !div) {
-      return res.status(400).json({
-        success: false,
-        error: 'Name, email, password, username, student_id, department, batch, and division are required'
-      });
+    const { username, student_id, name, email, password, department, batch, div, semester, role } = req.body;
+
+    const userRole = role || 'Student'; // Default role to Student
+
+    // ✅ Admin logic
+    if (userRole === 'Admin') {
+      // Only validate basic fields
+      if (!username || !name || !email || !password) {
+        return res.status(400).json({
+          success: false,
+          error: 'Username, name, email, and password are required for Admin users'
+        });
+      }
+    } 
+    // ✅ Student logic
+    else {
+      if (!username || !name || !email || !password || !student_id || !department || !batch || !div || !semester) {
+        return res.status(400).json({
+          success: false,
+          error: 'All fields are required for Student users'
+        });
+      }
+
+      // Validate division (1 or 2)
+      const divNum = parseInt(div);
+      if (![1, 2].includes(divNum)) {
+        return res.status(400).json({ success: false, error: 'Division must be 1 or 2' });
+      }
+
+      // Validate batch
+      const validBatches = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
+      if (!validBatches.includes(batch)) {
+        return res.status(400).json({ success: false, error: 'Batch must be one of: A1, A2, B1, B2, C1, C2' });
+      }
+
+      // Validate semester (1-8)
+      const semesterNum = parseInt(semester);
+      if (semesterNum < 1 || semesterNum > 8) {
+        return res.status(400).json({ success: false, error: 'Semester must be between 1 and 8' });
+      }
     }
 
-    // Check if user already exists
-    const existingUser = await User.findOne({ 
-      $or: [
-        { email: email.toLowerCase() },
-        { username: username },
-        { student_id: student_id }
-      ]
-    });
-    
+    // ✅ Check duplicates
+    const duplicateCheck = [
+      { email: email.toLowerCase() },
+      { username: username }
+    ];
+    if (userRole !== 'Admin' && student_id) duplicateCheck.push({ student_id });
+
+    const existingUser = await User.findOne({ $or: duplicateCheck });
     if (existingUser) {
-      return res.status(409).json({
-        success: false,
-        error: 'User with this email, username, or student ID already exists'
-      });
+      return res.status(409).json({ success: false, error: 'User with this email, username, or student ID already exists' });
     }
 
-    // Create new user
+    // ✅ Build user data
     const userData = {
-      ...req.body,
-      email: email.toLowerCase()
+      username,
+      name,
+      email: email.toLowerCase(),
+      password,
+      role: userRole,
+      ...(userRole !== 'Admin' && { student_id, department, batch, div: parseInt(div), semester: parseInt(semester) })
     };
 
+    // Save user
     const newUser = new User(userData);
     const savedUser = await newUser.save();
-    
+
     // Remove password from response
     const userResponse = savedUser.toObject();
     delete userResponse.password;
 
     res.status(201).json({
       success: true,
-      message: 'User created successfully',
+      message: `${userRole} created successfully`,
       data: userResponse
     });
+
   } catch (err) {
     console.error('Create user error:', err);
-    
-    // Handle duplicate key error
+
+    // Duplicate key error
     if (err.code === 11000) {
-      return res.status(409).json({
-        success: false,
-        error: 'User with this email, username, or student ID already exists'
-      });
-    }
-    
-    // Handle validation errors
-    if (err.name === 'ValidationError') {
-      const validationErrors = Object.values(err.errors).map(e => e.message);
-      return res.status(400).json({
-        success: false,
-        error: 'Validation failed',
-        details: validationErrors
-      });
+      return res.status(409).json({ success: false, error: 'User with this email, username, or student ID already exists' });
     }
 
-    res.status(500).json({
-      success: false,
-      error: 'Failed to create user',
-      details: err.message
-    });
+    // Validation errors
+    if (err.name === 'ValidationError') {
+      const validationErrors = Object.values(err.errors).map(e => e.message);
+      return res.status(400).json({ success: false, error: 'Validation failed', details: validationErrors });
+    }
+
+    // Generic error
+    res.status(500).json({ success: false, error: 'Failed to create user', details: err.message });
   }
 });
+
+
 
 /* PUT update user by ID - Enhanced with validation */
 router.put('/user/:id', async function(req, res, next) {
@@ -213,6 +253,50 @@ router.put('/user/:id', async function(req, res, next) {
     }
 
     const updateData = { ...req.body };
+
+    // Validate division if being updated
+    if (updateData.div && ![1, 2].includes(parseInt(updateData.div))) {
+      return res.status(400).json({
+        success: false,
+        error: 'Division must be 1 or 2'
+      });
+    }
+
+    // Validate batch if being updated
+    if (updateData.batch) {
+      const validBatches = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
+      if (!validBatches.includes(updateData.batch)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Batch must be one of: A1, A2, B1, B2, C1, C2'
+        });
+      }
+    }
+
+    // Validate semester if being updated
+    if (updateData.semester) {
+      const semesterNum = parseInt(updateData.semester);
+      if (semesterNum < 1 || semesterNum > 8) {
+        return res.status(400).json({
+          success: false,
+          error: 'Semester must be between 1 and 8'
+        });
+      }
+      updateData.semester = semesterNum;
+    }
+
+    // Validate role if being updated
+    if (updateData.role && !['Admin', 'Student'].includes(updateData.role)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Role must be either Admin or Student'
+      });
+    }
+
+    // Convert div to number if provided
+    if (updateData.div) {
+      updateData.div = parseInt(updateData.div);
+    }
 
     // If email is being updated, check for duplicates
     if (updateData.email) {
@@ -311,7 +395,7 @@ router.put('/user/:id', async function(req, res, next) {
   }
 });
 
-/* POST login - Direct database authentication */
+/* POST login - Enhanced authentication with role support */
 router.post('/login', async function(req, res, next) {
   try {
     const { username, password } = req.body;
@@ -342,19 +426,17 @@ router.post('/login', async function(req, res, next) {
       });
     }
 
-    // Determine user role based on username
-    let role = 'client'; // default role for students
-    if (username === 'admin') {
-      role = 'admin';
-    }
-
-    // Return success with minimal user data
+    // Return success with user data including role from database
     res.status(200).json({
       success: true,
-      role: role,
+      role: user.role.toLowerCase(), // Convert to lowercase for consistency
       username: user.username,
       name: user.name,
-      userId: user._id.toString()
+      userId: user._id.toString(),
+      department: user.department,
+      semester: user.semester,
+      batch: user.batch,
+      division: user.div
     });
 
   } catch (err) {
@@ -406,13 +488,49 @@ router.get('/meta/divisions', async function(req, res, next) {
     const divisions = await User.distinct('div');
     res.status(200).json({
       success: true,
-      data: divisions.filter(div => div && div.trim() !== '').sort()
+      data: divisions.filter(div => div !== null && div !== undefined).sort()
     });
   } catch (err) {
     console.error('Get divisions error:', err);
     res.status(500).json({
       success: false,
       error: 'Failed to retrieve divisions',
+      details: err.message
+    });
+  }
+});
+
+/* GET roles endpoint */
+router.get('/meta/roles', async function(req, res, next) {
+  try {
+    const roles = await User.distinct('role');
+    res.status(200).json({
+      success: true,
+      data: roles.filter(role => role && role.trim() !== '').sort()
+    });
+  } catch (err) {
+    console.error('Get roles error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve roles',
+      details: err.message
+    });
+  }
+});
+
+/* GET semesters endpoint */
+router.get('/meta/semesters', async function(req, res, next) {
+  try {
+    const semesters = await User.distinct('semester');
+    res.status(200).json({
+      success: true,
+      data: semesters.filter(sem => sem !== null && sem !== undefined).sort((a, b) => a - b)
+    });
+  } catch (err) {
+    console.error('Get semesters error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve semesters',
       details: err.message
     });
   }

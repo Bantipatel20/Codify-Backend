@@ -160,11 +160,11 @@ const FilterCriteriaSchema = new Schema({
     division: [{
         type: Number,
         min: 1,
-        max: 4
+        max: 2
     }],
     batch: [{
         type: String,
-        enum: ['A1', 'B1', 'C1', 'D1', 'A2', 'B2', 'C2', 'D2', 'A3', 'B3', 'C3', 'D3', 'A4', 'B4', 'C4', 'D4']
+        enum: ['A1', 'A2', 'B1', 'B2', 'C1', 'C2']
     }],
     semesterType: {
         type: String,
@@ -203,6 +203,41 @@ const ContestSchema = new Schema({
     duration: {
         type: String,
         required: true
+    },
+    // Language configuration for the contest
+    language: {
+        type: String,
+        required: true,
+        enum: ['python', 'javascript', 'java', 'cpp', 'c', 'go', 'ruby', 'php'],
+        default: 'cpp'
+    },
+    // Alternative: Support multiple languages for the contest
+    allowedLanguages: [{
+        type: String,
+        enum: ['python', 'javascript', 'java', 'cpp', 'c', 'go', 'ruby', 'php']
+    }],
+    // Language-specific settings
+    languageSettings: {
+        timeLimit: {
+            type: Number, // in seconds
+            default: 30,
+            min: 1,
+            max: 300
+        },
+        memoryLimit: {
+            type: Number, // in MB
+            default: 256,
+            min: 64,
+            max: 1024
+        },
+        compilerVersion: {
+            type: String,
+            default: 'latest'
+        },
+        compilerFlags: {
+            type: String,
+            default: ''
+        }
     },
     status: {
         type: String,
@@ -307,6 +342,16 @@ const ContestSchema = new Schema({
         penaltyPerWrongSubmission: {
             type: Number,
             default: 0
+        },
+        // Language-specific contest settings
+        allowLanguageSwitching: {
+            type: Boolean,
+            default: false
+        },
+        defaultLanguage: {
+            type: String,
+            enum: ['python', 'javascript', 'java', 'cpp', 'c', 'go', 'ruby', 'php'],
+            default: 'cpp'
         }
     },
     isActive: {
@@ -322,12 +367,24 @@ ContestSchema.index({ 'participants.userId': 1 });
 ContestSchema.index({ createdAt: -1 });
 ContestSchema.index({ startDate: 1, endDate: 1 });
 ContestSchema.index({ 'problems.problemId': 1 });
+ContestSchema.index({ language: 1 }); // Index for language filtering
+ContestSchema.index({ allowedLanguages: 1 }); // Index for multi-language contests
 
 // Pre-save middleware
 ContestSchema.pre('save', function(next) {
     this.updatedAt = Date.now();
     
     this.totalPoints = this.problems.reduce((sum, problem) => sum + problem.points, 0);
+    
+    // Set default allowed languages if not specified
+    if (!this.allowedLanguages || this.allowedLanguages.length === 0) {
+        this.allowedLanguages = [this.language];
+    }
+    
+    // Ensure the main language is in allowed languages
+    if (this.language && !this.allowedLanguages.includes(this.language)) {
+        this.allowedLanguages.push(this.language);
+    }
     
     if (this.participants.length > 0) {
         const totalScore = this.participants.reduce((sum, p) => sum + p.score, 0);
@@ -362,6 +419,10 @@ ContestSchema.virtual('manualProblemsCount').get(function() {
 
 ContestSchema.virtual('existingProblemsCount').get(function() {
     return this.problems.filter(p => !p.problemId.startsWith('manual_')).length;
+});
+
+ContestSchema.virtual('isMultiLanguage').get(function() {
+    return this.allowedLanguages && this.allowedLanguages.length > 1;
 });
 
 // Instance methods
@@ -423,6 +484,30 @@ ContestSchema.methods.getExistingProblems = function() {
     return this.problems.filter(p => !this.isManualProblem(p.problemId));
 };
 
+// Language-related methods
+ContestSchema.methods.isLanguageAllowed = function(language) {
+    return this.allowedLanguages.includes(language);
+};
+
+ContestSchema.methods.getLanguageConfig = function(language) {
+    if (!this.isLanguageAllowed(language)) {
+        throw new Error(`Language ${language} is not allowed in this contest`);
+    }
+    
+    return {
+        language: language,
+        timeLimit: this.languageSettings.timeLimit,
+        memoryLimit: this.languageSettings.memoryLimit,
+        compilerVersion: this.languageSettings.compilerVersion,
+        compilerFlags: this.languageSettings.compilerFlags
+    };
+};
+
+ContestSchema.methods.updateLanguageSettings = function(settings) {
+    this.languageSettings = { ...this.languageSettings, ...settings };
+    return this.save();
+};
+
 // Static methods
 ContestSchema.statics.findByStatus = function(status) {
     return this.find({ status, isActive: true }).sort({ startDate: -1 });
@@ -453,6 +538,24 @@ ContestSchema.statics.findWithManualProblems = function() {
     }).sort({ createdAt: -1 });
 };
 
+// Language-related static methods
+ContestSchema.statics.findByLanguage = function(language) {
+    return this.find({
+        $or: [
+            { language: language },
+            { allowedLanguages: language }
+        ],
+        isActive: true
+    }).sort({ createdAt: -1 });
+};
+
+ContestSchema.statics.findMultiLanguage = function() {
+    return this.find({
+        'allowedLanguages.1': { $exists: true }, // Has at least 2 languages
+        isActive: true
+    }).sort({ createdAt: -1 });
+};
+
 ContestSchema.methods.getUserBestSubmission = async function(userId, problemId) {
     const Submission = require('./Submission');
     return await Submission.findOne({
@@ -477,6 +580,29 @@ ContestSchema.methods.getSubmissionStats = async function() {
     ]);
     
     return stats;
+};
+
+ContestSchema.methods.getLanguageStats = async function() {
+    const Submission = require('./Submission');
+    
+    const languageStats = await Submission.aggregate([
+        { $match: { contestId: this._id } },
+        {
+            $group: {
+                _id: '$language',
+                count: { $sum: 1 },
+                avgScore: { $avg: '$score' },
+                successRate: {
+                    $avg: {
+                        $cond: [{ $eq: ['$status', 'Accepted'] }, 1, 0]
+                    }
+                }
+            }
+        },
+        { $sort: { count: -1 } }
+    ]);
+    
+    return languageStats;
 };
 
 ContestSchema.set('toJSON', { virtuals: true });

@@ -1,16 +1,16 @@
-const mongoose = require('mongoose'); // Corrected 'moongoose' to 'mongoose'
+const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
 const UserSchema = new Schema({
     username: {
         type: String,
-        required: true, // Ensure the name is required
+        required: true,
         unique: true 
     }, 
     student_id: {
         type: String,
-        required: true,
-        unique: true // Ensure email is unique
+        required: function() { return this.role === 'Student'; },
+        unique: function() { return this.role === 'Student'; }
     },   
     name: {
         type: String,
@@ -19,28 +19,40 @@ const UserSchema = new Schema({
     email: {
         type: String,
         required: true,
-        unique: true // Ensure email is unique
+        unique: true
     },
     password: {
         type: String,
-        required: true // Ensure the password is required
+        required: true
     },
     department: {
         type: String,
-        required: true // Ensure the password is required
+        required: function() { return this.role === 'Student'; }
     },
     batch: {
         type: String,
-        required: true // Ensure the password is required
+        required: function() { return this.role === 'Student'; }
     },
     div: {
         type: String,
-        required: true // Ensure the password is required
+        required: function() { return this.role === 'Student'; }
+    },
+    semester: {
+        type: Number,
+        required: function() { return this.role === 'Student'; },
+        min: 1,
+        max: 8
+    },
+    role: {
+        type: String,
+        required: true,
+        enum: ['Admin', 'Student'],
+        default: 'Student'
     },
     createdAt: {
         type: Date,
-        default: Date.now // Automatically set the date when user is created
+        default: Date.now
     }
 });
 
-module.exports = mongoose.model('User', UserSchema); // Export the User model
+module.exports = mongoose.model('User', UserSchema);

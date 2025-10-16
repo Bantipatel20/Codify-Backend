@@ -3,6 +3,7 @@ var express = require('express');
 var router = express.Router();
 const Problem = require('../models/Problem');
 const User = require('../models/Users');
+const Submission = require('../models/Submission'); // Add this import
 
 /* GET all problems - Enhanced with filtering and pagination */
 router.get('/', async function(req, res, next) {
@@ -493,7 +494,7 @@ router.post('/:id/show-all-testcases', async function(req, res, next) {
   }
 });
 
-/* DELETE problem by ID - PERMANENT DELETE */
+/* DELETE problem by ID - CASCADE DELETE WITH SUBMISSIONS */
 router.delete('/:id', async function(req, res, next) {
   try {
     const problemId = req.params.id;
@@ -513,25 +514,176 @@ router.delete('/:id', async function(req, res, next) {
       });
     }
 
-    // Permanently delete the problem from database
+    console.log(`🗑️ Starting cascade delete for problem: ${problem.title} (ID: ${problemId})`);
+
+    // Step 1: Count related submissions before deletion
+    const submissionCount = await Submission.countDocuments({ problemId: problemId });
+    console.log(`📊 Found ${submissionCount} submissions to delete`);
+
+    // Step 2: Delete all related submissions first
+    const submissionDeleteResult = await Submission.deleteMany({ problemId: problemId });
+    console.log(`✅ Deleted ${submissionDeleteResult.deletedCount} submissions`);
+
+    // Step 3: Also delete from any contests that might reference this problem
+    // If you have a Contest model that references problems, uncomment and modify:
+    /*
+    const Contest = require('../models/Contest');
+    const contestUpdateResult = await Contest.updateMany(
+      { 'problems.problemId': problemId },
+      { $pull: { problems: { problemId: problemId } } }
+    );
+    console.log(`📝 Updated ${contestUpdateResult.modifiedCount} contests`);
+    */
+
+    // Step 4: Delete any auto-save data for this problem
+    // If you have an AutoSave model, uncomment and modify:
+    /*
+    const AutoSave = require('../models/AutoSave');
+    const autoSaveDeleteResult = await AutoSave.deleteMany({ problemId: problemId });
+    console.log(`💾 Deleted ${autoSaveDeleteResult.deletedCount} auto-save records`);
+    */
+
+    // Step 5: Finally delete the problem itself
     const deletedProblem = await Problem.findByIdAndDelete(problemId);
+
+    // Step 6: Log the cascade delete summary
+    const deletionSummary = {
+      problem: {
+        id: problemId,
+        title: deletedProblem.title,
+        difficulty: deletedProblem.difficulty,
+        createdBy: deletedProblem.createdBy
+      },
+      cascadeDeletes: {
+        submissions: submissionDeleteResult.deletedCount,
+        // contests: contestUpdateResult?.modifiedCount || 0,
+        // autoSaves: autoSaveDeleteResult?.deletedCount || 0
+      },
+      deletedAt: new Date().toISOString()
+    };
+
+    console.log('🎯 Cascade delete completed:', deletionSummary);
 
     res.status(200).json({ 
       success: true,
-      message: 'Problem permanently deleted from database',
-      data: { 
-        deletedProblemId: problemId,
-        deletedProblem: {
-          title: deletedProblem.title,
-          difficulty: deletedProblem.difficulty
-        }
-      }
+      message: 'Problem and all related data permanently deleted',
+      data: deletionSummary
     });
+
   } catch (err) {
-    console.error('Delete problem error:', err);
+    console.error('❌ Cascade delete error:', err);
     res.status(500).json({
       success: false,
-      error: 'Failed to delete problem',
+      error: 'Failed to delete problem and related data',
+      details: err.message
+    });
+  }
+});
+
+/* DELETE multiple problems with cascade delete */
+router.delete('/bulk/delete', async function(req, res, next) {
+  try {
+    const { problemIds } = req.body;
+    
+    if (!Array.isArray(problemIds) || problemIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Problem IDs array is required and cannot be empty'
+      });
+    }
+
+    // Validate all problem IDs
+    for (const id of problemIds) {
+      if (!id.match(/^[0-9a-fA-F]{24}$/)) {
+        return res.status(400).json({
+          success: false,
+          error: `Invalid problem ID format: ${id}`
+        });
+      }
+    }
+
+    console.log(`🗑️ Starting bulk cascade delete for ${problemIds.length} problems`);
+
+    // Step 1: Get problem details before deletion
+    const problemsToDelete = await Problem.find({ 
+      _id: { $in: problemIds } 
+    }).select('_id title difficulty createdBy');
+
+    if (problemsToDelete.length !== problemIds.length) {
+      const foundIds = problemsToDelete.map(p => p._id.toString());
+      const missingIds = problemIds.filter(id => !foundIds.includes(id));
+      return res.status(404).json({
+        success: false,
+        error: 'Some problems not found',
+        missingIds: missingIds
+      });
+    }
+
+    // Step 2: Count and delete all related submissions
+    const submissionCount = await Submission.countDocuments({ 
+      problemId: { $in: problemIds } 
+    });
+    
+    const submissionDeleteResult = await Submission.deleteMany({ 
+      problemId: { $in: problemIds } 
+    });
+
+    console.log(`✅ Deleted ${submissionDeleteResult.deletedCount} submissions`);
+
+    // Step 3: Update contests (if applicable)
+    // Uncomment if you have Contest model:
+    /*
+    const Contest = require('../models/Contest');
+    const contestUpdateResult = await Contest.updateMany(
+      { 'problems.problemId': { $in: problemIds } },
+      { $pull: { problems: { problemId: { $in: problemIds } } } }
+    );
+    console.log(`📝 Updated ${contestUpdateResult.modifiedCount} contests`);
+    */
+
+    // Step 4: Delete auto-save data (if applicable)
+    // Uncomment if you have AutoSave model:
+    /*
+    const AutoSave = require('../models/AutoSave');
+    const autoSaveDeleteResult = await AutoSave.deleteMany({ 
+      problemId: { $in: problemIds } 
+    });
+    console.log(`💾 Deleted ${autoSaveDeleteResult.deletedCount} auto-save records`);
+    */
+
+    // Step 5: Delete all problems
+    const problemDeleteResult = await Problem.deleteMany({ 
+      _id: { $in: problemIds } 
+    });
+
+    const deletionSummary = {
+      deletedProblems: problemsToDelete.map(p => ({
+        id: p._id,
+        title: p.title,
+        difficulty: p.difficulty
+      })),
+      cascadeDeletes: {
+        submissions: submissionDeleteResult.deletedCount,
+        // contests: contestUpdateResult?.modifiedCount || 0,
+        // autoSaves: autoSaveDeleteResult?.deletedCount || 0
+      },
+      totalProblemsDeleted: problemDeleteResult.deletedCount,
+      deletedAt: new Date().toISOString()
+    };
+
+    console.log('🎯 Bulk cascade delete completed:', deletionSummary);
+
+    res.status(200).json({
+      success: true,
+      message: `Successfully deleted ${problemDeleteResult.deletedCount} problems and all related data`,
+      data: deletionSummary
+    });
+
+  } catch (err) {
+    console.error('❌ Bulk cascade delete error:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to bulk delete problems and related data',
       details: err.message
     });
   }

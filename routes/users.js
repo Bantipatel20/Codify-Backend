@@ -395,7 +395,7 @@ router.put('/user/:id', async function(req, res, next) {
   }
 });
 
-/* POST login - Enhanced authentication with role support */
+/* POST login - Enhanced authentication with case-insensitive username and password */
 router.post('/login', async function(req, res, next) {
   try {
     const { username, password } = req.body;
@@ -408,8 +408,10 @@ router.post('/login', async function(req, res, next) {
       });
     }
 
-    // Find user by username
-    const user = await User.findOne({ username: username });
+    // 🔄 Case-insensitive username search using MongoDB regex
+    const user = await User.findOne({ 
+      username: { $regex: new RegExp(`^${username}$`, 'i') }
+    });
 
     if (!user) {
       return res.status(401).json({
@@ -418,8 +420,8 @@ router.post('/login', async function(req, res, next) {
       });
     }
 
-    // Check if password matches
-    if (user.password !== password) {
+    // 🔄 Case-insensitive password comparison
+    if (user.password.toLowerCase() !== password.toLowerCase()) {
       return res.status(401).json({
         success: false,
         error: 'Invalid username or password'
@@ -429,10 +431,12 @@ router.post('/login', async function(req, res, next) {
     // Return success with user data including role from database
     res.status(200).json({
       success: true,
-      role: user.role.toLowerCase(), // Convert to lowercase for consistency
+      role: user.role.toLowerCase(),
       username: user.username,
       name: user.name,
       userId: user._id.toString(),
+      email: user.email,
+      student_id: user.student_id,
       department: user.department,
       semester: user.semester,
       batch: user.batch,

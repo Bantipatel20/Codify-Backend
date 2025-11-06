@@ -92,11 +92,15 @@ router.get('/', async function(req, res, next) {
 
         console.log('Fetching submissions with filter:', filter);
 
+        // Check if code should be included in response
+        const includeCode = req.query.includeCode === 'true';
+        const projection = includeCode ? { testCaseResults: 0 } : { code: 0, testCaseResults: 0 }; // Exclude code by default
+
         const [submissions, totalCount] = await Promise.all([
             Submission.find(filter)
+                .select(projection) // Apply projection
                 .populate('userId', 'name username email')
                 .populate('contestId', 'title')
-                .select('-code -testCaseResults') // Exclude large fields for list view
                 .skip(skip)
                 .limit(limit)
                 .sort({ submittedAt: -1 })
@@ -184,6 +188,119 @@ router.get('/stats/overview', async function(req, res, next) {
     }
 });
 
+/* POST submit code with pre-calculated results from frontend */
+router.post('/submit-with-results', async function(req, res, next) {
+    try {
+        const { 
+            userId, 
+            problemId, 
+            contestId, 
+            code, 
+            language,
+            status,
+            score,
+            passedTestCases,
+            totalTestCases,
+            testCaseResults,
+            executionTime,
+            memoryUsed
+        } = req.body;
+
+        console.log('📥 Received submission with pre-calculated results:', {
+            userId,
+            problemId,
+            status,
+            score,
+            passedTestCases,
+            totalTestCases
+        });
+
+        // Validate required fields
+        if (!userId || !problemId || !code || !language || status === undefined) {
+            return res.status(400).json({
+                success: false,
+                error: 'userId, problemId, code, language, and status are required'
+            });
+        }
+
+        // Validate language
+        const validLanguages = ['python', 'javascript', 'java', 'cpp', 'c', 'go', 'ruby', 'php'];
+        if (!validLanguages.includes(language.toLowerCase())) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid language. Valid languages: ' + validLanguages.join(', ')
+            });
+        }
+
+        // Verify user exists
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                error: 'User not found'
+            });
+        }
+
+        // Format test case results to match schema requirements
+        const formattedTestCaseResults = (testCaseResults || []).map((result, index) => ({
+            testCaseIndex: result.testCaseIndex !== undefined ? result.testCaseIndex : index,
+            input: result.input || '',
+            expectedOutput: result.expectedOutput || '',
+            actualOutput: result.actualOutput || '',
+            status: result.status || 'error',
+            executionTime: result.executionTime || 0,
+            memoryUsed: result.memoryUsed || 0,
+            errorMessage: result.errorMessage || ''
+        }));
+
+        // Create submission with pre-calculated results
+        const submission = new Submission({
+            userId,
+            problemId,
+            contestId: contestId || null,
+            code,
+            language: language.toLowerCase(),
+            status: status,
+            score: score || 0,
+            passedTestCases: passedTestCases || 0,
+            totalTestCases: totalTestCases || 0,
+            testCaseResults: formattedTestCaseResults,
+            executionTime: executionTime || 0,
+            memoryUsed: memoryUsed || 0,
+            evaluatedAt: new Date()
+        });
+
+        await submission.save();
+
+        // Update statistics
+        await updateStatistics(submission, contestId);
+
+        console.log(`✅ Submission ${submission._id} saved: ${status}, Score: ${score}/${totalTestCases}`);
+
+        res.status(200).json({
+            success: true,
+            message: 'Submission saved successfully',
+            submissionId: submission._id,
+            status: submission.status,
+            data: {
+                submissionId: submission._id,
+                status: submission.status,
+                score: submission.score,
+                passedTestCases: submission.passedTestCases,
+                totalTestCases: submission.totalTestCases
+            }
+        });
+
+    } catch (err) {
+        console.error('❌ Submit with results error:', err);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to save submission',
+            details: err.message
+        });
+    }
+});
+
 /* POST submit code for evaluation */
 router.post('/submit', async function(req, res, next) {
     let submission = null;
@@ -249,13 +366,13 @@ router.post('/submit', async function(req, res, next) {
                 });
             }
 
-            // Check if contest is active
-            if (!contest.isCurrentlyActive()) {
-                return res.status(400).json({
-                    success: false,
-                    error: 'Contest is not currently active'
-                });
-            }
+            // Contest active check removed - Allow submissions at any time
+            // if (!contest.isCurrentlyActive()) {
+            //     return res.status(400).json({
+            //         success: false,
+            //         error: 'Contest is not currently active'
+            //     });
+            // }
 
             // Find problem in contest
             problemData = contest.problems.find(p => p.problemId === problemId);
@@ -484,8 +601,14 @@ async function runTestCases(code, language, testCases) {
             extension = '.cpp';
             filename = path.join(tempDir, `${uniqueId}${extension}`);
             const cppExecutable = path.join(tempDir, uniqueId);
-            compileCommand = `g++ "${filename}" -o "${cppExecutable}"`;
-            runCommand = `"${cppExecutable}"`;
+            // Add -O0 for faster compilation, add .exe for Windows
+            if (process.platform === 'win32') {
+                compileCommand = `g++ -O0 "${filename}" -o "${cppExecutable}.exe"`;
+                runCommand = `"${cppExecutable}.exe"`;
+            } else {
+                compileCommand = `g++ -O0 "${filename}" -o "${cppExecutable}"`;
+                runCommand = `"${cppExecutable}"`;
+            }
             needsCompilation = true;
             break;
             
@@ -493,8 +616,14 @@ async function runTestCases(code, language, testCases) {
             extension = '.c';
             filename = path.join(tempDir, `${uniqueId}${extension}`);
             const cExecutable = path.join(tempDir, uniqueId);
-            compileCommand = `gcc "${filename}" -o "${cExecutable}"`;
-            runCommand = `"${cExecutable}"`;
+            // Add -O0 for faster compilation, add .exe for Windows
+            if (process.platform === 'win32') {
+                compileCommand = `gcc -O0 "${filename}" -o "${cExecutable}.exe"`;
+                runCommand = `"${cExecutable}.exe"`;
+            } else {
+                compileCommand = `gcc -O0 "${filename}" -o "${cExecutable}"`;
+                runCommand = `"${cExecutable}"`;
+            }
             needsCompilation = true;
             break;
 
@@ -528,8 +657,9 @@ async function runTestCases(code, language, testCases) {
         if (needsCompilation) {
             try {
                 const compileResult = await execAsync(compileCommand, {
-                    timeout: 30000, // 30 second compile timeout
-                    maxBuffer: 1024 * 1024 * 5 // 5MB buffer
+                    timeout: 60000, // 60 second compile timeout for Windows
+                    maxBuffer: 1024 * 1024 * 5, // 5MB buffer
+                    shell: true
                 });
                 
                 if (compileResult.stderr && compileResult.stderr.trim()) {
@@ -537,6 +667,7 @@ async function runTestCases(code, language, testCases) {
                 }
             } catch (compileError) {
                 // Compilation failed
+                console.log('Compilation error:', compileError.message);
                 return testCases.map(() => ({
                     status: 'error',
                     errorType: 'compilation',
@@ -557,12 +688,29 @@ async function runTestCases(code, language, testCases) {
 
             try {
                 const startTime = Date.now();
-                const result = await execAsync(runCommand, {
-                    input: input,
+                
+                // Write input to temp file for stdin redirection
+                let inputFile = null;
+                let finalCommand = runCommand;
+                
+                if (input && input.trim()) {
+                    inputFile = path.join(tempDir, `${uniqueId}_input_${i}.txt`);
+                    await fs.writeFile(inputFile, input, 'utf8');
+                    finalCommand = `${runCommand} < "${inputFile}"`;
+                }
+                
+                const result = await execAsync(finalCommand, {
                     timeout: 10000, // 10 second timeout per test case
                     maxBuffer: 1024 * 1024 * 2, // 2MB output buffer
-                    encoding: 'utf8'
+                    encoding: 'utf8',
+                    shell: true
                 });
+                
+                // Clean up input file
+                if (inputFile) {
+                    fs.unlink(inputFile).catch(() => {});
+                }
+                
                 const executionTime = Date.now() - startTime;
 
                 const actualOutput = (result.stdout || '').trim();
@@ -579,10 +727,15 @@ async function runTestCases(code, language, testCases) {
             } catch (execError) {
                 const executionTime = Date.now() - startTime;
                 
+                // Clean up input file on error
+                if (inputFile) {
+                    fs.unlink(inputFile).catch(() => {});
+                }
+                
                 let status = 'error';
                 let errorType = 'runtime';
                 
-                if (execError.killed && execError.signal === 'SIGTERM') {
+                if (execError.killed && (execError.signal === 'SIGTERM' || execError.signal === 'SIGKILL')) {
                     status = 'timeout';
                     errorType = 'timeout';
                 }

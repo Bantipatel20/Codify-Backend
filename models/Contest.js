@@ -192,13 +192,14 @@ const ContestSchema = new Schema({
     },
     endDate: {
         type: Date,
-        required: true,
-        validate: {
-            validator: function(endDate) {
-                return endDate > this.startDate;
-            },
-            message: 'End date must be after start date'
-        }
+        required: true
+        // Date validation removed - Allow any end date
+        // validate: {
+        //     validator: function(endDate) {
+        //         return endDate > this.startDate;
+        //     },
+        //     message: 'End date must be after start date'
+        // }
     },
     duration: {
         type: String,

@@ -134,14 +134,26 @@ router.post('/compile', async function(req, res, next) {
         extension = '.cpp';
         filename = path.join(tempDir, `${uniqueId}${extension}`);
         const executablePath = path.join(tempDir, uniqueId);
-        command = `g++ "${filename}" -o "${executablePath}" && "${executablePath}"`;
+        // Windows: use conditional execution to only run if compilation succeeds
+        // Add -O0 to disable optimization (faster compilation)
+        if (process.platform === 'win32') {
+          command = `g++ -O0 "${filename}" -o "${executablePath}.exe" && "${executablePath}.exe"`;
+        } else {
+          command = `g++ -O0 "${filename}" -o "${executablePath}" && "${executablePath}"`;
+        }
         break;
       
       case 'c':
         extension = '.c';
         filename = path.join(tempDir, `${uniqueId}${extension}`);
         const cExecutablePath = path.join(tempDir, uniqueId);
-        command = `gcc "${filename}" -o "${cExecutablePath}" && "${cExecutablePath}"`;
+        // Windows: use conditional execution to only run if compilation succeeds
+        // Add -O0 to disable optimization (faster compilation)
+        if (process.platform === 'win32') {
+          command = `gcc -O0 "${filename}" -o "${cExecutablePath}.exe" && "${cExecutablePath}.exe"`;
+        } else {
+          command = `gcc -O0 "${filename}" -o "${cExecutablePath}" && "${cExecutablePath}"`;
+        }
         break;
       
       case 'go':
@@ -173,32 +185,55 @@ router.post('/compile', async function(req, res, next) {
     // Write code to file asynchronously
     await fs.writeFile(filename, actualCode, 'utf8');
 
-    // Async cleanup function
+    // Set timeout based on language (compilation can be slow on Windows)
+    const timeoutMs = (lang.toLowerCase() === 'cpp' || lang.toLowerCase() === 'c++' || lang.toLowerCase() === 'c') 
+      ? 60000  // 60 seconds for C/C++ (compilation + execution)
+      : 30000; // 30 seconds for interpreted languages
+
+    // Async cleanup function with retry mechanism for Windows file locks
     const cleanup = async () => {
+      const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+      const maxRetries = 3;
+      
+      const deleteWithRetry = async (filePath, retries = 0) => {
+        try {
+          if (fsSync.existsSync(filePath)) {
+            await fs.unlink(filePath);
+          }
+        } catch (error) {
+          if (error.code === 'EPERM' && retries < maxRetries) {
+            // Wait before retrying (Windows file lock)
+            await sleep(100 * (retries + 1));
+            return deleteWithRetry(filePath, retries + 1);
+          }
+          // Log but don't throw - let cleanup continue
+          console.error(`Could not delete ${filePath}:`, error.message);
+        }
+      };
+
       try {
         if (lang.toLowerCase() === 'java' && uniqueSubDir) {
           // For Java, remove the entire unique subdirectory
-          await fs.rm(uniqueSubDir, { recursive: true, force: true });
+          await fs.rm(uniqueSubDir, { recursive: true, force: true }).catch(err => {
+            console.error('Java cleanup error:', err.message);
+          });
         } else {
           // Remove main file
-          if (fsSync.existsSync(filename)) {
-            await fs.unlink(filename);
-          }
+          await deleteWithRetry(filename);
+          
+          // Clean up input file if it exists
+          const inputFile = path.join(tempDir, `${uniqueId}_input.txt`);
+          await deleteWithRetry(inputFile);
           
           // Clean up compiled files for C/C++
           if (lang.toLowerCase() === 'cpp' || lang.toLowerCase() === 'c++' || lang.toLowerCase() === 'c') {
             const execFile = path.join(tempDir, uniqueId);
-            if (fsSync.existsSync(execFile)) {
-              await fs.unlink(execFile);
-            }
-            // Also try with .exe extension for Windows
-            if (fsSync.existsSync(`${execFile}.exe`)) {
-              await fs.unlink(`${execFile}.exe`);
-            }
+            await deleteWithRetry(execFile);
+            await deleteWithRetry(`${execFile}.exe`);
           }
         }
       } catch (cleanupError) {
-        console.error('Cleanup error:', cleanupError);
+        console.error('Cleanup error:', cleanupError.message);
       }
     };
 
@@ -208,11 +243,29 @@ router.post('/compile', async function(req, res, next) {
         cwd: tempDir,
         encoding: 'utf8',
         maxBuffer: 1024 * 1024 * 10, // 10MB buffer
-        timeout: 30000, // 30 second timeout
-        input: input
+        timeout: timeoutMs,
+        killSignal: 'SIGKILL', // Force kill on timeout
+        shell: true // Use default shell (more reliable)
       };
 
-      const { stdout, stderr } = await execAsync(command, options);
+      // Write input to a temp file for stdin redirection
+      let inputFile = null;
+      let finalCommand = command;
+      
+      if (input && input.trim()) {
+        inputFile = path.join(tempDir, `${uniqueId}_input.txt`);
+        await fs.writeFile(inputFile, input, 'utf8');
+        finalCommand = process.platform === 'win32' 
+          ? `${command} < "${inputFile}"`  // Windows stdin redirection
+          : `${command} < "${inputFile}"`;  // Unix stdin redirection
+      }
+
+      const { stdout, stderr } = await execAsync(finalCommand, options);
+      
+      // Clean up input file if created
+      if (inputFile) {
+        fs.unlink(inputFile).catch(() => {});
+      }
       const executionTime = Date.now() - startTime;
       
       // Cleanup asynchronously (don't wait for it)
@@ -234,6 +287,16 @@ router.post('/compile', async function(req, res, next) {
       
       const executionTime = Date.now() - startTime;
       
+      // Log the full error for debugging
+      console.log('Execution error details:', {
+        code: execError.code,
+        signal: execError.signal,
+        killed: execError.killed,
+        stdout: execError.stdout?.substring(0, 200),
+        stderr: execError.stderr?.substring(0, 500),
+        message: execError.message?.substring(0, 200)
+      });
+      
       // Handle different types of errors
       if (execError.code === 'ENOENT') {
         return res.status(500).json({
@@ -245,12 +308,12 @@ router.post('/compile', async function(req, res, next) {
         });
       }
 
-      if (execError.killed && execError.signal === 'SIGTERM') {
+      if (execError.killed && (execError.signal === 'SIGTERM' || execError.signal === 'SIGKILL')) {
         return res.status(408).json({
           error: 'Code execution timed out',
           success: false,
           output: execError.stdout || '',
-          stderr: 'Execution timed out after 30 seconds',
+          stderr: `Execution timed out after ${timeoutMs / 1000} seconds`,
           executionTime: `${executionTime}ms`
         });
       }
@@ -266,7 +329,8 @@ router.post('/compile', async function(req, res, next) {
         error: 'Compilation or runtime error occurred',
         language: lang,
         executionTime: `${executionTime}ms`,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        ...(process.env.NODE_ENV === 'development' && { command }) // Show command in dev mode
       });
     }
 

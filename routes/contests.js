@@ -12,8 +12,13 @@ router.get('/', async function(req, res, next) {
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
     
-    // Build filter object
-    const filter = { isActive: true };
+    // Build filter object - Show all contests (active and inactive)
+    const filter = {};
+    
+    // Optionally filter by isActive if specified in query
+    if (req.query.isActive !== undefined) {
+      filter.isActive = req.query.isActive === 'true';
+    }
     
     // Status filter
     if (req.query.status && req.query.status !== 'All') {
@@ -449,13 +454,13 @@ router.put('/:id', async function(req, res, next) {
       });
     }
 
-    // Don't allow updates to active or completed contests
-    if (contest.status === 'Active' || contest.status === 'Completed') {
-      return res.status(400).json({
-        success: false,
-        error: 'Cannot update active or completed contests'
-      });
-    }
+    // Allow updates to contests at any time (removed status restriction)
+    // if (contest.status === 'Active' || contest.status === 'Completed') {
+    //   return res.status(400).json({
+    //     success: false,
+    //     error: 'Cannot update active or completed contests'
+    //   });
+    // }
 
     const updateData = { ...req.body };
     delete updateData.participants; // Don't allow direct participant updates
@@ -577,13 +582,13 @@ router.delete('/:id', async function(req, res, next) {
       });
     }
 
-    // Don't allow deletion of active contests
-    if (contest.status === 'Active') {
-      return res.status(400).json({
-        success: false,
-        error: 'Cannot delete active contests'
-      });
-    }
+    // Allow deletion of contests at any time (removed status restriction)
+    // if (contest.status === 'Active') {
+    //   return res.status(400).json({
+    //     success: false,
+    //     error: 'Cannot delete active contests'
+    //   });
+    // }
 
     // Soft delete by setting isActive to false
     const deletedContest = await Contest.findByIdAndUpdate(
